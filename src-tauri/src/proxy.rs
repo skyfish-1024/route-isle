@@ -6,10 +6,11 @@ use crate::{
     },
     sysproxy::{enable_system_proxy, restore_system_proxy},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -40,6 +41,149 @@ unsafe extern "system" {
 }
 
 static PENDING_AUTO_START: AtomicBool = AtomicBool::new(false);
+const ELEVATED_TASK_NAME: &str = "RouteIsleElevated";
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ElevateHandoff {
+    pid: u32,
+    auto_start: bool,
+    ts: u64,
+}
+
+fn handoff_file_path() -> PathBuf {
+    std::env::temp_dir().join("routeisle-elevate-handoff.json")
+}
+
+fn current_exe_and_cwd() -> Result<(PathBuf, PathBuf), String> {
+    let exe_path = std::env::current_exe().map_err(|e| format!("无法定位程序路径：{e}"))?;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| {
+        exe_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    });
+    Ok((exe_path, cwd))
+}
+
+fn unescape_xml(value: &str) -> String {
+    value
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+}
+
+fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)? + start;
+    Some(unescape_xml(xml[start..end].trim()))
+}
+
+fn normalize_win_path(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_end_matches(['\\', '/'])
+        .to_ascii_lowercase()
+}
+
+fn elevated_task_matches(exe_path: &Path, cwd: &Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("schtasks.exe");
+        cmd.args(["/Query", "/TN", ELEVATED_TASK_NAME, "/XML"]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let Ok(out) = cmd.output() else {
+            return false;
+        };
+        if !out.status.success() {
+            return false;
+        }
+        let xml = String::from_utf8_lossy(&out.stdout);
+        if !xml.contains("<RunLevel>HighestAvailable</RunLevel>") {
+            return false;
+        }
+        let Some(task_cmd) = extract_xml_tag(&xml, "Command") else {
+            return false;
+        };
+        let Some(task_cwd) = extract_xml_tag(&xml, "WorkingDirectory") else {
+            return false;
+        };
+        normalize_win_path(&task_cmd) == normalize_win_path(&exe_path.to_string_lossy())
+            && normalize_win_path(&task_cwd) == normalize_win_path(&cwd.to_string_lossy())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (exe_path, cwd);
+        false
+    }
+}
+
+fn ensure_elevated_task_registered() {
+    #[cfg(target_os = "windows")]
+    {
+        if !is_current_process_admin() {
+            return;
+        }
+        let Ok((exe_path, cwd)) = current_exe_and_cwd() else {
+            return;
+        };
+        if elevated_task_matches(&exe_path, &cwd) {
+            return;
+        }
+        let exe_escaped = exe_path.to_string_lossy().replace('\'', "''");
+        let cwd_escaped = cwd.to_string_lossy().replace('\'', "''");
+        let ps_script = format!(
+            "$action = New-ScheduledTaskAction -Execute '{exe_escaped}' -WorkingDirectory '{cwd_escaped}'; \
+             $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name; \
+             $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest; \
+             $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances Parallel; \
+             Register-ScheduledTask -TaskName '{ELEVATED_TASK_NAME}' -Action $action -Principal $principal -Settings $settings -Force | Out-Null"
+        );
+        let mut cmd = Command::new("powershell.exe");
+        cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_script]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = cmd.output();
+    }
+}
+
+fn try_launch_via_scheduled_task(exe_path: &Path, cwd: &Path, auto_start: bool) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        if !elevated_task_matches(exe_path, cwd) {
+            return false;
+        }
+        let handoff_path = handoff_file_path();
+        let handoff = ElevateHandoff {
+            pid: std::process::id(),
+            auto_start,
+            ts: now_millis(),
+        };
+        let Ok(payload) = serde_json::to_string(&handoff) else {
+            return false;
+        };
+        if fs::write(&handoff_path, payload).is_err() {
+            return false;
+        }
+        let mut cmd = Command::new("schtasks.exe");
+        cmd.args(["/Run", "/TN", ELEVATED_TASK_NAME]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let ok = cmd.output().map(|o| o.status.success()).unwrap_or(false);
+        if !ok {
+            let _ = fs::remove_file(&handoff_path);
+        }
+        ok
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (exe_path, cwd, auto_start);
+        false
+    }
+}
 
 pub fn init_from_args() {
     let mut args = std::env::args().skip(1);
@@ -54,6 +198,21 @@ pub fn init_from_args() {
         }
     }
 
+    let handoff_path = handoff_file_path();
+    if let Ok(raw) = fs::read_to_string(&handoff_path) {
+        let _ = fs::remove_file(&handoff_path);
+        if let Ok(handoff) = serde_json::from_str::<ElevateHandoff>(&raw) {
+            if now_millis().saturating_sub(handoff.ts) <= 15_000 {
+                if wait_pid.is_none() {
+                    wait_pid = Some(handoff.pid);
+                }
+                if handoff.auto_start {
+                    PENDING_AUTO_START.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+    }
+
     #[cfg(target_os = "windows")]
     if let Some(pid) = wait_pid {
         const SYNCHRONIZE: u32 = 0x0010_0000;
@@ -64,6 +223,10 @@ pub fn init_from_args() {
                 let _ = CloseHandle(handle);
             }
         }
+    }
+
+    if is_current_process_admin() {
+        thread::spawn(ensure_elevated_task_registered);
     }
 }
 
@@ -178,16 +341,16 @@ fn relaunch_elevated(
     state: &ProxyManager,
     auto_start: bool,
 ) -> Result<(), String> {
-    let exe_path = std::env::current_exe().map_err(|e| format!("无法定位程序路径：{e}"))?;
-    let cwd = std::env::current_dir().unwrap_or_else(|_| {
-        exe_path
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."))
-    });
+    let (exe_path, cwd) = current_exe_and_cwd()?;
 
     // Save tunEnabled: true first so the newly elevated process picks it up immediately; roll back if UAC is canceled
     save_rules_to_disk(app, rules)?;
+
+    if try_launch_via_scheduled_task(&exe_path, &cwd, auto_start) {
+        stop_proxy_internal(app, state);
+        app.exit(0);
+        return Ok(());
+    }
 
     let pid = std::process::id();
     let mut arg_list = vec![

@@ -6,7 +6,7 @@ import DeleteConfirm from './DeleteConfirm.vue'
 import PanelSelect from './PanelSelect.vue'
 import TrafficPanel from './TrafficPanel.vue'
 
-const props = defineProps({ rules: { type: Object, required: true }, running: Boolean, traffic: { type: Object, required: true }, sessions: { type: Array, required: true } })
+const props = defineProps({ rules: { type: Object, required: true }, running: Boolean, toggling: Boolean, traffic: { type: Object, required: true }, sessions: { type: Array, required: true } })
 const emit = defineEmits(['toggle'])
 const theme = defineModel('theme')
 const systemProxyEnabled = defineModel('systemProxyEnabled', { type: Boolean, default: true })
@@ -148,10 +148,10 @@ function removeUpstream(id) {
             <SwitchThumb class="rule-switch-thumb" />
           </SwitchRoot>
         </label>
-        <label class="footer-switch">
+        <label class="footer-switch" :class="{ 'is-busy': toggling }">
           <span>运行</span>
-          <SwitchRoot :model-value="running" class="compact-switch" aria-label="启用分流" @update:model-value="emit('toggle')">
-            <SwitchThumb class="rule-switch-thumb" />
+          <SwitchRoot :model-value="running" :disabled="toggling" :aria-busy="toggling" class="compact-switch" aria-label="启用分流" @update:model-value="emit('toggle')">
+            <SwitchThumb class="rule-switch-thumb" :class="{ 'is-loading': toggling }" />
           </SwitchRoot>
         </label>
       </div>
@@ -279,12 +279,17 @@ footer { border-top: 1px solid var(--edge); padding-top: 12px; }
 .editor-buttons { display: flex; gap: 8px; }
 .footer-switches { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 .footer-switch { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; white-space: nowrap; cursor: pointer; }
+.footer-switch.is-busy, .footer-switch.is-busy .compact-switch { cursor: progress; opacity: .85; }
 .panel-footer .fallback { min-width: 0; }
 .panel-footer .fallback > span { flex: none; }
 .panel-footer :deep(.picker) { box-sizing: border-box; width: 96px; }
 .panel-footer :deep(.picker > span:first-child) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .panel-footer :deep(.picker svg) { flex: none; }
-.rule-switch-thumb { display: block; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); transition: transform .15s ease; }
+.rule-switch-thumb { position: relative; display: block; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); transition: transform .15s ease; }
 .rule-switch-thumb[data-state="checked"] { transform: translateX(11px); background: var(--accent); }
-@media (prefers-reduced-motion: reduce) { .tabs::before, .rule-switch-thumb { transition: none; } }
+.rule-switch-thumb.is-loading { background: transparent; }
+.rule-switch-thumb.is-loading::after { content: ''; position: absolute; inset: 0; box-sizing: border-box; border-radius: 50%; border: 1.5px solid color-mix(in srgb, var(--accent) 28%, transparent); border-top-color: var(--accent); animation: switch-spin .7s linear infinite; }
+.rule-switch-thumb[data-state="checked"].is-loading::after { border-color: color-mix(in srgb, var(--foreground) 25%, transparent); border-top-color: var(--foreground); }
+@keyframes switch-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .tabs::before, .rule-switch-thumb { transition: none; } .rule-switch-thumb.is-loading::after { animation: none; } }
 </style>

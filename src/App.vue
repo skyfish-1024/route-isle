@@ -337,7 +337,7 @@ watch(running, (active, _, onCleanup) => {
 
   <main v-else-if="isPanelWindow" class="panel-stage" :class="{ 'pop-up': popUp }" :data-theme="theme">
     <Transition @after-leave="onPanelHidden">
-      <RulePanel v-if="expanded" v-model:system-proxy-enabled="systemProxyEnabled" v-model:tun-enabled="tunEnabled" :theme="theme" :rules="rules" :running="running" :traffic="traffic" :sessions="sessions"
+      <RulePanel v-if="expanded" v-model:system-proxy-enabled="systemProxyEnabled" v-model:tun-enabled="tunEnabled" :theme="theme" :rules="rules" :running="running" :toggling="toggling" :traffic="traffic" :sessions="sessions"
         @update:theme="setTheme" @toggle="toggleRunning" />
     </Transition>
   </main>
@@ -363,7 +363,7 @@ watch(running, (active, _, onCleanup) => {
       <ChevronDown class="chevron" :size="13" aria-hidden="true" />
     </button>
     <Transition>
-      <RulePanel v-if="expanded" v-model:system-proxy-enabled="systemProxyEnabled" v-model:tun-enabled="tunEnabled" :theme="theme" :rules="rules" :running="running" :traffic="traffic" :sessions="sessions"
+      <RulePanel v-if="expanded" v-model:system-proxy-enabled="systemProxyEnabled" v-model:tun-enabled="tunEnabled" :theme="theme" :rules="rules" :running="running" :toggling="toggling" :traffic="traffic" :sessions="sessions"
         @update:theme="setTheme" @toggle="toggleRunning" />
     </Transition>
   </main>
