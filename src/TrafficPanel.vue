@@ -124,10 +124,10 @@ const sampleTimeFormat = new Intl.DateTimeFormat('zh-CN', {
 </script>
 
 <template>
-  <section class="traffic-details" aria-label="模拟流量统计">
+  <section class="traffic-details" aria-label="流量统计">
     <header class="traffic-heading traffic-nav">
       <div class="dimensions" role="group" aria-label="统计页面">
-        <button type="button" :aria-pressed="view === 'live'" @click="view = 'live'">本次运行</button>
+        <button type="button" :aria-pressed="view === 'live'" @click="view = 'live'">当前</button>
         <button type="button" :aria-pressed="view === 'history'" @click="view = 'history'; hoverIndex = null">历史</button>
         <button type="button" :aria-pressed="view === 'logs'" @click="openLogs()">日志</button>
       </div>
@@ -202,7 +202,7 @@ const sampleTimeFormat = new Intl.DateTimeFormat('zh-CN', {
     </div>
     <template v-else>
       <div class="log-heading">
-        <span>{{ logSession ? dateFormat.format(logSession.startedAt) + ' 的日志' : '本次运行日志' }} · 模拟</span>
+        <span>{{ logSession ? dateFormat.format(logSession.startedAt) + ' 的日志' : '当前运行日志' }}</span>
         <span>{{ filteredLogs.length }} / {{ logs.length }} 条</span>
       </div>
       <div class="traffic-scroll history-list" role="region" aria-label="代理日志" tabindex="0">

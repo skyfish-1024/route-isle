@@ -12,7 +12,7 @@ const theme = defineModel('theme')
 const tunEnabled = defineModel('tunEnabled', { type: Boolean })
 const protocols = [{ id: 'http', name: 'HTTP' }, { id: 'socks5', name: 'SOCKS5' }]
 const editing = ref(false)
-const tab = ref('rules')
+const tab = ref('traffic')
 const addLabel = computed(() => tab.value === 'rules' ? '添加规则组' : '添加上游')
 const draft = ref(null)
 const upstreamDraft = ref(null)
@@ -80,11 +80,14 @@ function removeUpstream(id) {
     <TabsRoot v-model="tab" class="panel-tabs">
       <div class="mb-3">
         <TabsList class="tabs flex" :data-active="tab" aria-label="分流设置">
+          <TabsTrigger value="traffic">运行详情</TabsTrigger>
           <TabsTrigger value="rules">域名规则</TabsTrigger>
           <TabsTrigger value="upstreams">上游代理</TabsTrigger>
-          <TabsTrigger value="traffic">运行详情</TabsTrigger>
         </TabsList>
       </div>
+      <TabsContent value="traffic">
+        <TrafficPanel :traffic="traffic" :sessions="sessions" :theme="theme" />
+      </TabsContent>
       <TabsContent value="rules">
         <TransitionGroup name="rule-list" tag="div" class="panel-scroll">
         <div v-for="(group, index) in rules.groups" :key="group.id" class="rule-grid rule-row domain-row" :class="{ 'is-disabled': group.enabled === false }">
@@ -125,9 +128,6 @@ function removeUpstream(id) {
         </div>
         </TransitionGroup>
       </TabsContent>
-      <TabsContent value="traffic">
-        <TrafficPanel :traffic="traffic" :sessions="sessions" :theme="theme" />
-      </TabsContent>
     </TabsRoot>
     <footer class="panel-footer mt-3">
       <div class="fallback">
@@ -137,13 +137,13 @@ function removeUpstream(id) {
       <div class="footer-switches">
         <label class="footer-switch">
           <span>TUN</span>
-          <SwitchRoot v-model="tunEnabled" class="compact-switch" aria-label="启用 TUN（模拟）">
+          <SwitchRoot v-model="tunEnabled" class="compact-switch" aria-label="启用 TUN">
             <SwitchThumb class="rule-switch-thumb" />
           </SwitchRoot>
         </label>
         <label class="footer-switch">
           <span>运行</span>
-          <SwitchRoot :model-value="running" class="compact-switch" aria-label="模拟运行" @update:model-value="emit('toggle')">
+          <SwitchRoot :model-value="running" class="compact-switch" aria-label="启用分流" @update:model-value="emit('toggle')">
             <SwitchThumb class="rule-switch-thumb" />
           </SwitchRoot>
         </label>
@@ -238,8 +238,8 @@ button:hover { border-color: var(--accent); }
 .panel-title { font-size: 13px; font-weight: 500; letter-spacing: -.01em; }
 .tabs { position: relative; gap: 0; padding: 3px; background: var(--field); border-radius: 9px; }
 .tabs::before { content: ''; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 3); background: var(--selected); border-radius: 6px; box-shadow: 0 1px 3px #0001; transition: transform .18s ease; }
-.tabs[data-active="upstreams"]::before { transform: translateX(100%); }
-.tabs[data-active="traffic"]::before { transform: translateX(200%); }
+.tabs[data-active="rules"]::before { transform: translateX(100%); }
+.tabs[data-active="upstreams"]::before { transform: translateX(200%); }
 .tabs button { position: relative; font-size: 12px; font-weight: 500; border: 0; color: var(--muted); }
 .tabs button[aria-selected="true"] { color: var(--foreground); }
 .rule-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 34%) 52px; gap: 8px; }

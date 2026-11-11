@@ -1,0 +1,95 @@
+pub mod config;
+pub mod models;
+pub mod proxy;
+pub mod sysproxy;
+pub mod window;
+
+use proxy::{load_rules, save_rules, start_proxy, stop_proxy, stop_proxy_internal, ProxyManager};
+use tauri::{Emitter, Manager, PhysicalPosition, WindowEvent};
+use window::{
+    drag_island, get_window_state, hide_panel, position_panel_near_capsule, sync_capsule_state,
+    toggle_panel, IslandPosition, PanelVisibilityEvent,
+};
+
+pub fn run() {
+    tauri::Builder::default()
+        .manage(IslandPosition::default())
+        .manage(ProxyManager::default())
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                if let Some(monitor) = window.primary_monitor()? {
+                    let width = window.outer_size()?.width;
+                    let x = monitor.position().x
+                        + monitor.size().width.saturating_sub(width) as i32 / 2;
+                    let y =
+                        monitor.position().y + (16.0 * monitor.scale_factor()).round() as i32;
+                    window.set_position(PhysicalPosition::new(x, y))?;
+                }
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            let app = window.app_handle();
+            match (window.label(), event) {
+                ("main", WindowEvent::Moved(_)) => {
+                    let state = app.state::<IslandPosition>();
+                    let (visible, insets) = {
+                        let inner = state.0.lock().expect("window state lock");
+                        (inner.panel_visible, inner.capsule_insets)
+                    };
+                    if visible {
+                        if let Ok(pop_up) = position_panel_near_capsule(app, insets) {
+                            let mut inner = state.0.lock().expect("window state lock");
+                            if inner.pop_up != pop_up {
+                                inner.pop_up = pop_up;
+                                let _ = app.emit(
+                                    "panel-visibility",
+                                    PanelVisibilityEvent {
+                                        visible: true,
+                                        pop_up,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+                ("panel", WindowEvent::CloseRequested { api, .. }) => {
+                    api.prevent_close();
+                    let state = app.state::<IslandPosition>();
+                    let pop_up = {
+                        let mut inner = state.0.lock().expect("window state lock");
+                        inner.panel_visible = false;
+                        inner.capsule_state.expanded = false;
+                        inner.pop_up
+                    };
+                    let _ = app.emit(
+                        "panel-visibility",
+                        PanelVisibilityEvent {
+                            visible: false,
+                            pop_up,
+                        },
+                    );
+                    let _ = window.hide();
+                }
+                ("main", WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed) => {
+                    let state = app.state::<ProxyManager>();
+                    stop_proxy_internal(app, &state);
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            drag_island,
+            toggle_panel,
+            hide_panel,
+            sync_capsule_state,
+            get_window_state,
+            load_rules,
+            save_rules,
+            start_proxy,
+            stop_proxy,
+        ])
+        .run(tauri::generate_context!())
+        .expect("failed to run Split Proxy Island");
+}

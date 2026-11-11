@@ -3,6 +3,7 @@ dist/
 /src-tauri/target/
 /src-tauri/gen/
 .system-proxy-backup.xml
+.sysproxy-backup.json
 .proxy-stop-*
 proxy-rules.json
 nodes.yaml

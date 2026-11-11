@@ -1,14 +1,7 @@
-export function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let value = bytes / 1024
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit++
-  }
-  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`
-}
+import { domainsOf, formatBytes } from './utils/format'
+import { subscribeMihomoTraffic } from './services/mihomoClient'
+
+export { formatBytes, subscribeMihomoTraffic }
 
 export function createTraffic() {
   return {
@@ -20,7 +13,7 @@ export function createTraffic() {
 export function simulateTraffic(traffic, rules) {
   const routes = rules.groups
     .filter(group => group.enabled !== false)
-    .map(group => ({ id: group.id, name: group.name, target: group.target, domains: group.domains.split(/[\s,]+/).filter(Boolean) }))
+    .map(group => ({ id: group.id, name: group.name, target: group.target, domains: domainsOf(group.domains) }))
   routes.push({ id: 'unmatched', name: '未匹配', target: rules.fallback, domains: ['www.example.com'] })
   const exitNames = { system: 'Windows 选路', wlan: 'WLAN 直连', reject: '拒绝连接' }
   for (const upstream of rules.upstreams) exitNames[upstream.id] = upstream.name
