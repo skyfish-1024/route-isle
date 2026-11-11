@@ -56,6 +56,15 @@ export function subscribeMihomoTraffic({
     map[id].download += down
   }
 
+  function addPairTraffic(map, exitId, exitName, ruleId, ruleName, up, down) {
+    const key = `${exitId}\0${ruleId}`
+    map[key] ??= { exit: exitName, rule: ruleName, upload: 0, download: 0 }
+    map[key].exit = exitName
+    map[key].rule = ruleName
+    map[key].upload += up
+    map[key].download += down
+  }
+
   function handleConnectionsSnapshot(parsed) {
     const t = trafficRef.value
     const lookup = buildRouteLookup(rules)
@@ -109,6 +118,7 @@ export function subscribeMihomoTraffic({
         t.download += dd
         addBucketTraffic(t.byRule, ruleId, ruleName, du, dd)
         addBucketTraffic(t.byExit, exitId, exitName, du, dd)
+        addPairTraffic(t.byPair ??= {}, exitId, exitName, ruleId, ruleName, du, dd)
       } else {
         activeUserUp += du
         activeUserDown += dd
@@ -116,6 +126,7 @@ export function subscribeMihomoTraffic({
         addBucketTraffic(t.byRule, ruleId, ruleName, du, dd)
         addBucketTraffic(sampleByExit, exitId, exitName, du, dd)
         addBucketTraffic(t.byExit, exitId, exitName, du, dd)
+        addPairTraffic(t.byPair ??= {}, exitId, exitName, ruleId, ruleName, du, dd)
       }
     }
 
@@ -138,6 +149,7 @@ export function subscribeMihomoTraffic({
         addBucketTraffic(t.byRule, route.ruleId, route.ruleName, remUp, remDown)
         addBucketTraffic(sampleByExit, route.exitId, route.exitName, remUp, remDown)
         addBucketTraffic(t.byExit, route.exitId, route.exitName, remUp, remDown)
+        addPairTraffic(t.byPair ??= {}, route.exitId, route.exitName, route.ruleId, route.ruleName, remUp, remDown)
       }
       uploadRate = activeUserUp + remUp
       downloadRate = activeUserDown + remDown

@@ -28,14 +28,11 @@ defineProps({ options: Array, label: String, theme: String })
 </template>
 
 <style scoped>
-.picker { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 5px 8px; border: 1px solid var(--edge); border-radius: 8px; background: var(--field); color: inherit; font: inherit; font-size: 12px; }
-.picker:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.picker-menu { z-index: 20; box-sizing: border-box; min-width: var(--reka-select-trigger-width); border: 1px solid #344442; border-radius: 10px; background: #161f21; color: #eaf4f1; box-shadow: 0 8px 24px #0004; font-size: 12px; }
+.picker { display: inline-flex; align-items: center; justify-content: space-between; gap: 6px; box-sizing: border-box; min-width: 0; height: 24px; padding: 0 7px; border: 0; border-radius: 6px; background: var(--hover); color: inherit; font: inherit; font-size: 11px; line-height: 1; transition: background-color .15s ease; }
+.picker:hover { background: color-mix(in srgb, var(--foreground) 10%, transparent); }
+.picker:focus, .picker:focus-visible, .picker[data-state="open"] { outline: none; background: color-mix(in srgb, var(--accent) 16%, var(--hover)); }
+.picker-menu { z-index: 20; box-sizing: border-box; min-width: var(--reka-select-trigger-width); border: 1px solid var(--edge); border-radius: 10px; background: var(--surface); color: var(--foreground); backdrop-filter: blur(24px) saturate(180%); box-shadow: 0 8px 24px #0004; font-size: 12px; }
 .picker-viewport { max-height: min(240px, var(--reka-select-content-available-height, 240px)); padding: 4px; }
-.picker-menu[data-theme="light"] { background: #f6faf8; color: #18322b; border-color: #cadbd5; }
 .picker-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px; border-radius: 6px; outline: none; cursor: pointer; }
-.picker-option[data-highlighted] { background: #84edc72b; }
-.picker { border-color: var(--edge); background: var(--field); color: inherit; font-size: 11px; border-radius: 6px; }
-.picker-menu, .picker-menu[data-theme="light"] { background: var(--surface); color: var(--foreground); border-color: var(--edge); backdrop-filter: blur(24px) saturate(180%); }
 .picker-option[data-highlighted] { background: var(--hover); }
 </style>

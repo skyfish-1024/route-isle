@@ -59,10 +59,14 @@ pub struct RulesPayload {
     pub groups: Vec<RuleGroup>,
     pub upstreams: Vec<Upstream>,
     pub fallback: String,
+    #[serde(default = "default_enabled")]
+    pub system_proxy_enabled: bool,
     #[serde(default)]
     pub tun_enabled: bool,
     #[serde(default)]
     pub running: bool,
+    #[serde(default)]
+    pub auto_start: bool,
     #[serde(default)]
     pub controller: ControllerInfo,
 }
@@ -93,8 +97,10 @@ impl Default for RulesPayload {
                 address: "127.0.0.1:7890".into(),
             }],
             fallback: "flyingbird".into(),
+            system_proxy_enabled: true,
             tun_enabled: false,
             running: false,
+            auto_start: false,
             controller: ControllerInfo::default(),
         }
     }
@@ -243,6 +249,7 @@ pub fn save_rules_to_disk(app: &AppHandle, rules: &RulesPayload) -> Result<(), S
         serde_json::to_value(&rules.upstreams).map_err(|e| e.to_string())?,
     );
     map.insert("fallback".into(), json!(rules.fallback));
+    map.insert("systemProxyEnabled".into(), json!(rules.system_proxy_enabled));
     map.insert("tunEnabled".into(), json!(rules.tun_enabled));
 
     let serialized = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;

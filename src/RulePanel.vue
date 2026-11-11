@@ -9,6 +9,7 @@ import TrafficPanel from './TrafficPanel.vue'
 const props = defineProps({ rules: { type: Object, required: true }, running: Boolean, traffic: { type: Object, required: true }, sessions: { type: Array, required: true } })
 const emit = defineEmits(['toggle'])
 const theme = defineModel('theme')
+const systemProxyEnabled = defineModel('systemProxyEnabled', { type: Boolean, default: true })
 const tunEnabled = defineModel('tunEnabled', { type: Boolean })
 const protocols = [{ id: 'http', name: 'HTTP' }, { id: 'socks5', name: 'SOCKS5' }]
 const editing = ref(false)
@@ -59,8 +60,8 @@ function removeUpstream(id) {
 </script>
 
 <template>
-  <section class="panel mt-2">
-    <header class="mb-3 flex items-center justify-between">
+  <section class="panel">
+    <header class="panel-header">
       <strong class="panel-title">域名分流</strong>
       <div class="panel-header-actions">
         <button v-if="tab !== 'traffic'" type="button" class="add-item" :aria-label="addLabel" :title="addLabel"
@@ -78,15 +79,15 @@ function removeUpstream(id) {
       </div>
     </header>
     <TabsRoot v-model="tab" class="panel-tabs">
-      <div class="mb-3">
-        <TabsList class="tabs flex" :data-active="tab" aria-label="分流设置">
+      <div class="tabs-wrap">
+        <TabsList class="tabs" :data-active="tab" aria-label="分流设置">
           <TabsTrigger value="traffic">运行详情</TabsTrigger>
           <TabsTrigger value="rules">域名规则</TabsTrigger>
           <TabsTrigger value="upstreams">上游代理</TabsTrigger>
         </TabsList>
       </div>
       <TabsContent value="traffic">
-        <TrafficPanel :traffic="traffic" :sessions="sessions" :theme="theme" />
+        <TrafficPanel :traffic="traffic" :sessions="sessions" :rules="rules" :theme="theme" />
       </TabsContent>
       <TabsContent value="rules">
         <TransitionGroup name="rule-list" tag="div" class="panel-scroll">
@@ -129,12 +130,18 @@ function removeUpstream(id) {
         </TransitionGroup>
       </TabsContent>
     </TabsRoot>
-    <footer class="panel-footer mt-3">
+    <footer class="panel-footer">
       <div class="fallback">
         <span>默认出口</span>
         <PanelSelect v-model="rules.fallback" :options="targets" :theme="theme" label="默认出口" />
       </div>
       <div class="footer-switches">
+        <label class="footer-switch">
+          <span>系统代理</span>
+          <SwitchRoot v-model="systemProxyEnabled" class="compact-switch" aria-label="系统代理">
+            <SwitchThumb class="rule-switch-thumb" />
+          </SwitchRoot>
+        </label>
         <label class="footer-switch">
           <span>TUN</span>
           <SwitchRoot v-model="tunEnabled" class="compact-switch" aria-label="启用 TUN">
@@ -158,9 +165,9 @@ function removeUpstream(id) {
             <DialogDescription class="editor-note">填写规则名称和域名后缀，域名可用空格、逗号或换行分隔。</DialogDescription>
             <label>规则名称<input v-model="draft.name" required maxlength="40" /></label>
             <label>域名规则<textarea v-model="draft.domains" required rows="4" spellcheck="false" /></label>
-            <div class="flex items-center justify-between gap-2">
+            <div class="editor-actions">
               <PanelSelect v-model="draft.target" :options="targets" :theme="theme" label="出口选择" />
-              <div class="flex gap-2">
+              <div class="editor-buttons">
                 <DialogClose type="button">取消</DialogClose>
                 <button type="submit" class="action" :disabled="!draft.name.trim() || !domainsOf(draft.domains).length">保存</button>
               </div>
@@ -178,9 +185,9 @@ function removeUpstream(id) {
             <DialogDescription class="editor-note">设置上游名称、协议和连接地址。</DialogDescription>
             <label>上游名称<input v-model="upstreamDraft.name" required maxlength="40" /></label>
             <label>地址<input v-model="upstreamDraft.address" required placeholder="主机:端口" /></label>
-            <div class="flex items-center justify-between gap-2">
+            <div class="editor-actions">
               <PanelSelect v-model="upstreamDraft.protocol" :options="protocols" :theme="theme" label="协议" />
-              <div class="flex gap-2">
+              <div class="editor-buttons">
                 <DialogClose type="button">取消</DialogClose>
                 <button type="submit" class="action" :disabled="!upstreamDraft.name.trim() || !upstreamDraft.address.trim()">保存</button>
               </div>
@@ -234,9 +241,12 @@ button:hover { border-color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .action { background: var(--accent); color: var(--ink); border-color: transparent; border-radius: 999px; padding-inline: 12px; font-weight: 600; }
 .panel { display: flex; flex-direction: column; box-sizing: border-box; height: 350px; padding: 14px; border-radius: 18px; background: var(--surface); backdrop-filter: blur(24px) saturate(180%); border: 1px solid var(--edge); box-shadow: 0 4px 6px -1px #0000000d, 0 20px 25px -5px #00000014, inset 0 1px #ffffff0a; }
+:where(.panel) { margin-top: 8px; }
+.panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.tabs-wrap { margin-bottom: 12px; }
 .panel > header, .panel > footer, .panel-tabs > :first-child { flex: none; }
 .panel-title { font-size: 13px; font-weight: 500; letter-spacing: -.01em; }
-.tabs { position: relative; gap: 0; padding: 3px; background: var(--field); border-radius: 9px; }
+.tabs { display: flex; position: relative; gap: 0; padding: 3px; background: var(--field); border-radius: 9px; }
 .tabs::before { content: ''; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 3); background: var(--selected); border-radius: 6px; box-shadow: 0 1px 3px #0001; transition: transform .18s ease; }
 .tabs[data-active="rules"]::before { transform: translateX(100%); }
 .tabs[data-active="upstreams"]::before { transform: translateX(200%); }
@@ -256,18 +266,22 @@ footer { border-top: 1px solid var(--edge); padding-top: 12px; }
 .fallback { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
 .action { font-size: 11px; font-weight: 500; padding: 6px 10px; border-radius: 7px; background: #10b9811a; color: var(--accent); }
 .editor { background: var(--surface); color: var(--foreground); border-color: var(--edge); backdrop-filter: blur(24px) saturate(180%); }
-.editor input, .editor textarea { background: var(--field); border-color: var(--edge); }
+.editor input, .editor textarea { border: 0; background: var(--hover); padding: 6px 8px; transition: background-color .15s ease; }
+.editor input:hover, .editor textarea:hover { background: color-mix(in srgb, var(--foreground) 10%, transparent); }
+.editor input:focus, .editor input:focus-visible, .editor textarea:focus, .editor textarea:focus-visible { outline: none; background: color-mix(in srgb, var(--accent) 16%, var(--hover)); }
 @media (max-width: 420px) { .rule-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 34%) 52px; gap: 4px; } .group-summary { gap: 3px; } }
 .domain-row { grid-template-columns: minmax(0, 1fr) minmax(0, 34%) 86px; }
 .is-disabled .group-summary strong, .is-disabled .route-cell { color: var(--muted); }
 .rule-actions .rule-switch, .footer-switch .compact-switch { display: flex; align-items: center; width: 27px; height: 16px; padding: 2px; border-radius: 999px; background: var(--selected); }
 .rule-actions .rule-switch[data-state="checked"], .footer-switch .compact-switch[data-state="checked"] { background: color-mix(in srgb, var(--accent) 35%, var(--field)); }
-.panel-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
-.footer-switches { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.panel-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 10px; margin-top: 12px; }
+.editor-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.editor-buttons { display: flex; gap: 8px; }
+.footer-switches { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 .footer-switch { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; white-space: nowrap; cursor: pointer; }
 .panel-footer .fallback { min-width: 0; }
 .panel-footer .fallback > span { flex: none; }
-.panel-footer :deep(.picker) { box-sizing: border-box; width: 104px; }
+.panel-footer :deep(.picker) { box-sizing: border-box; width: 96px; }
 .panel-footer :deep(.picker > span:first-child) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .panel-footer :deep(.picker svg) { flex: none; }
 .rule-switch-thumb { display: block; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); transition: transform .15s ease; }

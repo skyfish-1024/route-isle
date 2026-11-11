@@ -6,7 +6,7 @@ export { formatBytes, subscribeMihomoTraffic }
 export function createTraffic() {
   return {
     upload: 0, download: 0, uploadRate: 0, downloadRate: 0,
-    history: [], logs: [], byExit: {}, byRule: {},
+    history: [], logs: [], byExit: {}, byRule: {}, byPair: {},
   }
 }
 
@@ -49,6 +49,12 @@ export function simulateTraffic(traffic, rules) {
       buckets[id].upload += upload
       buckets[id].download += download
     }
+    const pairKey = `${route.target}\0${route.id}`
+    const pair = traffic.byPair[pairKey] ??= { exit: exit.name, rule: rule.name, upload: 0, download: 0 }
+    pair.exit = exit.name
+    pair.rule = rule.name
+    pair.upload += upload
+    pair.download += download
     traffic.uploadRate += upload
     traffic.downloadRate += download
   }

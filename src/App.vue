@@ -98,6 +98,7 @@ function loadHistory() {
 }
 const sessions = ref(loadHistory())
 let startedAt
+const systemProxyEnabled = ref(true)
 const tunEnabled = ref(false)
 const theme = ref('dark')
 let themeTransition
@@ -133,6 +134,19 @@ const rules = reactive({
 
 let controllerInfo = { host: '127.0.0.1', port: 17891, secret: 'routeisle-local-secret' }
 let rulesLoaded = !desktop
+let suppressSave = false
+
+if (!desktop) {
+  watch(expanded, (open, _, onCleanup) => {
+    if (!open) return
+    const onPointerDown = (event) => {
+      if (event.target?.closest?.('.shell, .picker-menu, .date-popover, .delete-popover, .editor, .editor-overlay')) return
+      expanded.value = false
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    onCleanup(() => document.removeEventListener('pointerdown', onPointerDown))
+  })
+}
 
 if (desktop) {
   listen('panel-visibility', ({ payload }) => {
@@ -165,18 +179,30 @@ if (isCapsuleWindow) {
 }
 
 if (isPanelWindow) {
-  invoke('load_rules').then(saved => {
+  invoke('load_rules').then(async saved => {
+    let shouldAutoStart = false
     if (saved) {
       if (Array.isArray(saved.groups)) rules.groups = saved.groups
       if (Array.isArray(saved.upstreams)) rules.upstreams = saved.upstreams
       if (saved.fallback) rules.fallback = saved.fallback
+      if (typeof saved.systemProxyEnabled === 'boolean') systemProxyEnabled.value = saved.systemProxyEnabled
       if (typeof saved.tunEnabled === 'boolean') tunEnabled.value = saved.tunEnabled
       if (saved.controller) controllerInfo = saved.controller
       if (typeof saved.running === 'boolean') running.value = saved.running
+      shouldAutoStart = Boolean(saved.autoStart) && !running.value
+    }
+    await nextTick()
+    rulesLoaded = true
+    if (shouldAutoStart) {
+      try {
+        await invoke('start_proxy', { rules: serializeRules() })
+        running.value = true
+      } catch (error) {
+        console.error('Unable to resume proxy after elevation', error)
+      }
     }
   }).catch(error => {
     console.error('Unable to load proxy rules', error)
-  }).finally(() => {
     rulesLoaded = true
   })
 
@@ -204,17 +230,20 @@ function serializeRules() {
     })),
     upstreams: rules.upstreams.map(upstream => ({ ...upstream })),
     fallback: rules.fallback,
+    systemProxyEnabled: systemProxyEnabled.value,
     tunEnabled: tunEnabled.value,
   }
 }
 
-watch([rules, tunEnabled], () => {
-  if (!isPanelWindow || !rulesLoaded) return
-  invoke('save_rules', { rules: serializeRules() }).catch(error => {
+watch([rules, systemProxyEnabled, tunEnabled], () => {
+  if (!isPanelWindow || !rulesLoaded || suppressSave) return
+  invoke('save_rules', { rules: serializeRules(), wasRunning: running.value }).catch(async error => {
     console.error('Unable to save proxy rules', error)
     if (tunEnabled.value) {
+      suppressSave = true
       tunEnabled.value = false
-      running.value = false
+      await nextTick()
+      suppressSave = false
     }
     alert(typeof error === 'string' ? error : '保存配置或启用 TUN 失败')
   })
@@ -254,7 +283,7 @@ watch(running, (active, _, onCleanup) => {
         startedAt, endedAt: Date.now(),
         upload: traffic.value.upload, download: traffic.value.download,
         logs: [...traffic.value.logs],
-        byExit: traffic.value.byExit, byRule: traffic.value.byRule,
+        byExit: traffic.value.byExit, byRule: traffic.value.byRule, byPair: traffic.value.byPair,
       }, ...sessions.value].slice(0, 30)
       try {
         localStorage.setItem(historyKey, JSON.stringify(sessions.value))
@@ -308,7 +337,7 @@ watch(running, (active, _, onCleanup) => {
 
   <main v-else-if="isPanelWindow" class="panel-stage" :class="{ 'pop-up': popUp }" :data-theme="theme">
     <Transition @after-leave="onPanelHidden">
-      <RulePanel v-if="expanded" v-model:tun-enabled="tunEnabled" :theme="theme" :rules="rules" :running="running" :traffic="traffic" :sessions="sessions"
+      <RulePanel v-if="expanded" v-model:system-proxy-enabled="systemProxyEnabled" v-model:tun-enabled="tunEnabled" :theme="theme" :rules="rules" :running="running" :traffic="traffic" :sessions="sessions"
         @update:theme="setTheme" @toggle="toggleRunning" />
     </Transition>
   </main>
@@ -334,7 +363,7 @@ watch(running, (active, _, onCleanup) => {
       <ChevronDown class="chevron" :size="13" aria-hidden="true" />
     </button>
     <Transition>
-      <RulePanel v-if="expanded" v-model:tun-enabled="tunEnabled" :theme="theme" :rules="rules" :running="running" :traffic="traffic" :sessions="sessions"
+      <RulePanel v-if="expanded" v-model:system-proxy-enabled="systemProxyEnabled" v-model:tun-enabled="tunEnabled" :theme="theme" :rules="rules" :running="running" :traffic="traffic" :sessions="sessions"
         @update:theme="setTheme" @toggle="toggleRunning" />
     </Transition>
   </main>

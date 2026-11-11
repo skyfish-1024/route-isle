@@ -1,11 +1,14 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { formatBytes } from './traffic'
+import { exitNameFor } from './services/routeMatcher'
+import PanelDatePicker from './PanelDatePicker.vue'
 import PanelSelect from './PanelSelect.vue'
 
 const props = defineProps({
   traffic: { type: Object, required: true },
   sessions: { type: Array, required: true },
+  rules: { type: Object, default: () => ({ groups: [], upstreams: [] }) },
   theme: { type: String, required: true },
 })
 const view = ref('live')
@@ -15,6 +18,8 @@ const logExit = ref('all')
 const logResult = ref('all')
 const logDate = ref('')
 const historyDate = ref('')
+const historyExit = ref('all')
+const historyRule = ref('all')
 
 function isOnDate(timestamp, date) {
   if (!date) return true
@@ -25,6 +30,92 @@ function isOnDate(timestamp, date) {
 }
 
 const datedSessions = computed(() => props.sessions.filter(session => isOnDate(session.startedAt, historyDate.value)))
+function collectGroupNames(sessions, key, initialNames = []) {
+  const names = new Set(initialNames)
+  for (const session of sessions) {
+    for (const group of Object.values(session[key] || {})) {
+      names.add(group?.name || '未命名')
+    }
+  }
+  return Array.from(names)
+}
+const historyExitOptions = computed(() => {
+  const configured = [
+    exitNameFor('system'),
+    exitNameFor('wlan'),
+    ...(props.rules?.upstreams || []).map(upstream => exitNameFor(upstream.id, props.rules.upstreams)),
+    exitNameFor('reject'),
+  ]
+  return [
+    { id: 'all', name: '出口' },
+    ...collectGroupNames(props.sessions, 'byExit', configured).map(name => ({ id: 'exit:' + name, name })),
+  ]
+})
+const historyRuleOptions = computed(() => {
+  const configured = [
+    ...(props.rules?.groups || []).map(group => group.name?.trim() || '未命名规则组'),
+    '未匹配',
+  ]
+  return [
+    { id: 'all', name: '规则' },
+    ...collectGroupNames(props.sessions, 'byRule', configured).map(name => ({ id: 'rule:' + name, name })),
+  ]
+})
+function sumMatchingBuckets(buckets, selectedName) {
+  let upload = 0
+  let download = 0
+  let matched = false
+  for (const group of Object.values(buckets || {})) {
+    if ((group?.name || '未命名') !== selectedName) continue
+    upload += group.upload || 0
+    download += group.download || 0
+    if ((group.upload || 0) > 0 || (group.download || 0) > 0) matched = true
+  }
+  return { upload, download, matched }
+}
+
+function sessionTrafficForFilter(session) {
+  const exitName = historyExit.value === 'all' ? null : historyExit.value.slice('exit:'.length)
+  const ruleName = historyRule.value === 'all' ? null : historyRule.value.slice('rule:'.length)
+
+  if (!exitName && !ruleName) {
+    return { upload: session.upload || 0, download: session.download || 0, matched: true }
+  }
+
+  if (exitName && ruleName) {
+    if (session.byPair) {
+      let upload = 0
+      let download = 0
+      let matched = false
+      for (const pair of Object.values(session.byPair)) {
+        if ((pair?.exit || '未命名') !== exitName || (pair?.rule || '未命名') !== ruleName) continue
+        upload += pair.upload || 0
+        download += pair.download || 0
+        if ((pair.upload || 0) > 0 || (pair.download || 0) > 0) matched = true
+      }
+      return { upload, download, matched }
+    }
+    // Fallback for sessions saved before byPair tracking: check logs for an unambiguous mapping.
+    const ruleTotals = sumMatchingBuckets(session.byRule, ruleName)
+    const exitTotals = sumMatchingBuckets(session.byExit, exitName)
+    if (!ruleTotals.matched || !exitTotals.matched) return { upload: 0, download: 0, matched: false }
+    const logs = session.logs || []
+    const ruleExits = new Set(logs.filter(l => (l.rule || '未命名') === ruleName).map(l => l.exit || '未命名'))
+    if (ruleExits.size === 1 && ruleExits.has(exitName)) return ruleTotals
+    const exitRules = new Set(logs.filter(l => (l.exit || '未命名') === exitName).map(l => l.rule || '未命名'))
+    if (exitRules.size === 1 && exitRules.has(ruleName)) return exitTotals
+    return { upload: 0, download: 0, matched: false }
+  }
+
+  return exitName
+    ? sumMatchingBuckets(session.byExit, exitName)
+    : sumMatchingBuckets(session.byRule, ruleName)
+}
+
+const filteredSessions = computed(() => datedSessions.value.flatMap(session => {
+  const { upload, download, matched } = sessionTrafficForFilter(session)
+  return matched ? [{ session, upload, download }] : []
+}))
 const logs = computed(() => logSession.value ? logSession.value.logs || [] : props.traffic.logs)
 const exitOptions = computed(() => [
   { id: 'all', name: '出口' },
@@ -53,10 +144,6 @@ function openLogs(session = null) {
   view.value = 'logs'
 }
 const dimension = ref('all')
-const historyDimension = ref('all')
-const historyGroups = (session) => Object.entries(
-  (historyDimension.value === 'exit' ? session.byExit : session.byRule) || {},
-)
 const dimensions = [
   { value: 'all', label: '全部' },
   { value: 'exit', label: '出口' },
@@ -131,17 +218,21 @@ const sampleTimeFormat = new Intl.DateTimeFormat('zh-CN', {
         <button type="button" :aria-pressed="view === 'history'" @click="view = 'history'; hoverIndex = null">历史</button>
         <button type="button" :aria-pressed="view === 'logs'" @click="openLogs()">日志</button>
       </div>
-      <div v-if="view === 'live' || view === 'history'" class="stats-filters" role="group" aria-label="统计筛选">
-        <input v-if="view === 'history'" v-model="historyDate" class="date-filter" type="date" aria-label="历史日期">
+      <div v-if="view === 'live'" class="stats-filters" role="group" aria-label="统计筛选">
         <div class="dimensions">
           <button v-for="option in dimensions" :key="option.value" type="button"
-            :aria-pressed="(view === 'history' ? historyDimension : dimension) === option.value"
-            @click="view === 'history' ? historyDimension = option.value : dimension = option.value">{{ option.label }}</button>
+            :aria-pressed="dimension === option.value"
+            @click="dimension = option.value">{{ option.label }}</button>
         </div>
+      </div>
+      <div v-else-if="view === 'history'" class="history-filters" role="group" aria-label="历史筛选">
+        <PanelDatePicker v-model="historyDate" :theme="theme" label="历史日期" />
+        <PanelSelect v-model="historyExit" :options="historyExitOptions" :theme="theme" label="筛选出口" />
+        <PanelSelect v-model="historyRule" :options="historyRuleOptions" :theme="theme" label="筛选规则" />
       </div>
       <div v-else-if="view === 'logs'" class="log-filters" role="group" aria-label="筛选日志">
         <input v-model="logQuery" type="search" placeholder="搜索域名" aria-label="搜索域名">
-        <input v-model="logDate" class="date-filter" type="date" aria-label="日志日期">
+        <PanelDatePicker v-model="logDate" :theme="theme" label="日志日期" />
         <PanelSelect v-model="logExit" :options="exitOptions" :theme="theme" label="筛选出口" />
         <PanelSelect v-model="logResult" :options="resultOptions" :theme="theme" label="筛选结果" />
       </div>
@@ -184,21 +275,16 @@ const sampleTimeFormat = new Intl.DateTimeFormat('zh-CN', {
     </div>
     </template>
     <div v-else-if="view === 'history'" class="traffic-scroll history-list" role="region" aria-label="运行历史" tabindex="0">
-      <div v-for="session in datedSessions" :key="session.startedAt" class="history-row">
+      <div v-for="{ session, upload, download } in filteredSessions" :key="session.startedAt" class="history-row">
         <div class="traffic-row history-summary">
           <span>{{ dateFormat.format(session.startedAt) }}</span>
-          <span v-if="historyDimension === 'all'">↑ {{ formatBytes(session.upload) }} · ↓ {{ formatBytes(session.download) }}</span>
+          <span>↑ {{ formatBytes(upload) }} · ↓ {{ formatBytes(download) }}</span>
           <button type="button" class="log-link" @click="openLogs(session)">查看日志</button>
         </div>
-        <template v-if="historyDimension !== 'all'">
-          <div v-for="[id, group] in historyGroups(session)" :key="id" class="traffic-row history-group">
-            <span :title="group.name">{{ group.name || '未命名' }}</span>
-            <span>↑ {{ formatBytes(group.upload) }} · ↓ {{ formatBytes(group.download) }}</span>
-          </div>
-          <div v-if="!historyGroups(session).length" class="traffic-row history-group">此记录仅保存了总量</div>
-        </template>
       </div>
-      <p v-if="!datedSessions.length" class="traffic-empty">{{ sessions.length ? '该日期没有运行记录。' : '停止一次有连接记录的运行后，历史会显示在这里。' }}</p>
+      <p v-if="!filteredSessions.length" class="traffic-empty">
+        {{ !sessions.length ? '停止一次有连接记录的运行后，历史会显示在这里。' : (!datedSessions.length ? '该日期没有运行记录。' : '没有符合筛选条件的运行记录。') }}
+      </p>
     </div>
     <template v-else>
       <div class="log-heading">
@@ -219,7 +305,7 @@ const sampleTimeFormat = new Intl.DateTimeFormat('zh-CN', {
 <style scoped>
 .traffic-details { display: flex; flex-direction: column; box-sizing: border-box; height: 100%; padding: 2px; }
 .traffic-scroll { overflow: auto; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted) 45%, transparent) transparent; }
-.history-list { flex: 1; min-height: 0; }
+.history-list { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 @supports selector(::-webkit-scrollbar) {
   .traffic-scroll { scrollbar-width: auto; scrollbar-color: auto; }
   .traffic-scroll::-webkit-scrollbar { width: 4px; }
@@ -264,26 +350,28 @@ const sampleTimeFormat = new Intl.DateTimeFormat('zh-CN', {
 .traffic-row { min-height: 28px; padding: 0 6px; font-size: 11px; }
 .traffic-row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .traffic-row > span:last-child { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
-.traffic-empty { margin: 7px 6px; }
-.history-row { margin-top: 4px; border-radius: 6px; background: var(--cell); }
+.traffic-empty { margin: auto; padding: 12px; text-align: center; }
+.history-row { flex: none; margin-top: 4px; border-radius: 6px; background: var(--cell); }
 .history-summary > span:nth-child(2) { margin-left: auto; color: var(--muted); white-space: nowrap; }
-.history-group { margin: 0 6px; padding: 0 4px; border-top: 1px solid var(--edge); }
 .log-link { flex: none; border: 0; background: transparent; color: var(--accent); font: inherit; }
 .log-heading { display: flex; justify-content: space-between; gap: 6px; margin: 4px 0; color: var(--muted); font-size: 11px; }
-.traffic-nav { flex-wrap: wrap; }
+.traffic-nav { flex-wrap: wrap; gap: 6px 12px; }
 .traffic-nav .dimensions { flex: none; }
 .stats-filters { display: flex; align-items: center; gap: 5px; margin-left: auto; }
-.log-filters { display: grid; grid-template-columns: minmax(46px, 1fr) 96px 58px 58px; gap: 4px; flex: 0 1 280px; margin-left: auto; }
-.log-filters input, .date-filter { box-sizing: border-box; min-width: 0; padding: 4px; border: 1px solid var(--edge); border-radius: 6px; background: var(--field); color: var(--foreground); font: inherit; font-size: 11px; }
-.date-filter { width: 112px; }
-.log-filters .date-filter { width: 100%; }
-.log-filters :deep(.picker) { gap: 3px; padding-inline: 5px; }
+.history-filters { display: grid; grid-template-columns: 94px minmax(62px, 1fr) minmax(62px, 1fr); gap: 4px; flex: 0 1 236px; margin-left: auto; align-items: center; }
+.log-filters { display: grid; grid-template-columns: minmax(68px, 1fr) 94px 54px 54px; gap: 4px; flex: 1 1 280px; margin-left: auto; align-items: center; }
+.log-filters input { box-sizing: border-box; min-width: 0; height: 24px; padding: 0 7px; border: 0; border-radius: 6px; background: var(--hover); color: var(--foreground); font: inherit; font-size: 11px; line-height: 24px; transition: background-color .15s ease; }
+.log-filters input:hover { background: color-mix(in srgb, var(--foreground) 10%, transparent); }
+.log-filters input:focus, .log-filters input:focus-visible { outline: none; background: color-mix(in srgb, var(--accent) 16%, var(--hover)); }
+.history-filters :deep(.picker), .log-filters :deep(.picker) { gap: 3px; height: 24px; padding: 0 6px; }
 @media (max-width: 365px) {
-  .log-filters { grid-template-columns: minmax(46px, 1fr) 96px; }
+  .history-filters { grid-template-columns: 1fr 1fr; }
+  .history-filters > :first-child { grid-column: 1 / -1; }
+  .log-filters { grid-template-columns: minmax(68px, 1fr) 94px; }
 }
-.log-filters :deep(.picker > span:first-child) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.log-filters :deep(.picker svg) { flex: none; }
-.log-entry { padding: 5px 6px; margin-bottom: 4px; border-radius: 6px; background: var(--cell); font-size: 11px; }
+.history-filters :deep(.picker > span:first-child), .log-filters :deep(.picker > span:first-child) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-filters :deep(.picker svg), .log-filters :deep(.picker svg) { flex: none; }
+.log-entry { flex: none; padding: 5px 6px; margin-bottom: 4px; border-radius: 6px; background: var(--cell); font-size: 11px; }
 .log-entry > div { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
 .log-entry > div + div { margin-top: 2px; color: var(--muted); font-size: 10px; }
 .log-entry strong, .log-entry > div + div > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

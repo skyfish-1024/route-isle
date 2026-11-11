@@ -2,20 +2,24 @@ pub mod config;
 pub mod models;
 pub mod proxy;
 pub mod sysproxy;
+pub mod tray;
 pub mod window;
 
 use proxy::{load_rules, save_rules, start_proxy, stop_proxy, stop_proxy_internal, ProxyManager};
 use tauri::{Emitter, Manager, PhysicalPosition, WindowEvent};
+use std::{thread, time::Duration};
 use window::{
-    drag_island, get_window_state, hide_panel, position_panel_near_capsule, sync_capsule_state,
-    toggle_panel, IslandPosition, PanelVisibilityEvent,
+    collapse_panel, drag_island, get_window_state, hide_panel, position_panel_near_capsule,
+    sync_capsule_state, toggle_panel, IslandPosition, PanelVisibilityEvent,
 };
 
 pub fn run() {
+    proxy::init_from_args();
     tauri::Builder::default()
         .manage(IslandPosition::default())
         .manage(ProxyManager::default())
         .setup(|app| {
+            tray::create_tray(app.handle())?;
             if let Some(window) = app.get_webview_window("main") {
                 if let Some(monitor) = window.primary_monitor()? {
                     let width = window.outer_size()?.width;
@@ -55,21 +59,24 @@ pub fn run() {
                 }
                 ("panel", WindowEvent::CloseRequested { api, .. }) => {
                     api.prevent_close();
-                    let state = app.state::<IslandPosition>();
-                    let pop_up = {
-                        let mut inner = state.0.lock().expect("window state lock");
-                        inner.panel_visible = false;
-                        inner.capsule_state.expanded = false;
-                        inner.pop_up
-                    };
-                    let _ = app.emit(
-                        "panel-visibility",
-                        PanelVisibilityEvent {
-                            visible: false,
-                            pop_up,
-                        },
-                    );
-                    let _ = window.hide();
+                    collapse_panel(app, true);
+                }
+                ("panel", WindowEvent::Focused(false)) => {
+                    let app_handle = app.clone();
+                    thread::spawn(move || {
+                        thread::sleep(Duration::from_millis(80));
+                        let main_focused = app_handle
+                            .get_webview_window("main")
+                            .and_then(|w| w.is_focused().ok())
+                            .unwrap_or(false);
+                        let panel_focused = app_handle
+                            .get_webview_window("panel")
+                            .and_then(|w| w.is_focused().ok())
+                            .unwrap_or(false);
+                        if !main_focused && !panel_focused {
+                            collapse_panel(&app_handle, false);
+                        }
+                    });
                 }
                 ("main", WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed) => {
                     let state = app.state::<ProxyManager>();

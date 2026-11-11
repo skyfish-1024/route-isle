@@ -207,32 +207,33 @@ pub async fn drag_island(
     Ok(())
 }
 
-#[tauri::command]
-pub fn toggle_panel(
-    app: AppHandle,
+pub fn toggle_panel_visibility(
+    app: &AppHandle,
     insets: Option<[f64; 4]>,
-    saved: State<'_, IslandPosition>,
-) -> Result<bool, String> {
-    let next_visible = {
+) -> tauri::Result<bool> {
+    let saved = app.state::<IslandPosition>();
+    let (next_visible, current_insets, prev_pop_up) = {
         let mut inner = saved.0.lock().expect("window state lock");
         if let Some(i) = insets {
             inner.capsule_insets = i;
         }
         inner.panel_visible = !inner.panel_visible;
         inner.capsule_state.expanded = inner.panel_visible;
-        inner.panel_visible
+        (inner.panel_visible, inner.capsule_insets, inner.pop_up)
     };
 
-    let current_insets = saved.0.lock().expect("window state lock").capsule_insets;
     let pop_up = if next_visible {
-        let up = position_panel_near_capsule(&app, current_insets).map_err(|e| e.to_string())?;
+        if let Some(capsule) = app.get_webview_window("main") {
+            let _ = capsule.show();
+        }
+        let up = position_panel_near_capsule(app, current_insets)?;
         if let Some(panel) = app.get_webview_window("panel") {
             let _ = panel.show();
             let _ = panel.set_focus();
         }
         up
     } else {
-        saved.0.lock().expect("window state lock").pop_up
+        prev_pop_up
     };
 
     {
@@ -248,6 +249,36 @@ pub fn toggle_panel(
         },
     );
     Ok(next_visible)
+}
+
+pub fn collapse_panel(app: &AppHandle, immediate_hide: bool) {
+    let pop_up = {
+        let state = app.state::<IslandPosition>();
+        let mut inner = state.0.lock().expect("window state lock");
+        if !inner.panel_visible {
+            return;
+        }
+        inner.panel_visible = false;
+        inner.capsule_state.expanded = false;
+        inner.pop_up
+    };
+    let _ = app.emit(
+        "panel-visibility",
+        PanelVisibilityEvent {
+            visible: false,
+            pop_up,
+        },
+    );
+    if immediate_hide {
+        if let Some(panel) = app.get_webview_window("panel") {
+            let _ = panel.hide();
+        }
+    }
+}
+
+#[tauri::command]
+pub fn toggle_panel(app: AppHandle, insets: Option<[f64; 4]>) -> Result<bool, String> {
+    toggle_panel_visibility(&app, insets).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
