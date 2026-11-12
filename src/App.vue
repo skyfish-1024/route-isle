@@ -186,6 +186,7 @@ const rules = reactive({
   upstreams: [{ id: 'flyingbird', name: '飞鸟', protocol: 'http', address: '127.0.0.1:7890' }],
   fallback: 'flyingbird',
   cnFallback: 'wlan',
+  bypassDomains: 'localhost\n*.localhost\nlocalhost.*\nlocalhost.v.qq.com\nlocalhost.weixin.qq.com\n*.local\n*.lan',
 })
 
 let controllerInfo = { host: '127.0.0.1', port: 17891, secret: 'routeisle-local-secret' }
@@ -242,6 +243,7 @@ if (isPanelWindow) {
       if (Array.isArray(saved.upstreams)) rules.upstreams = saved.upstreams
       if (saved.fallback) rules.fallback = saved.fallback
       if (saved.cnFallback) rules.cnFallback = saved.cnFallback
+      if (typeof saved.bypassDomains === 'string') rules.bypassDomains = saved.bypassDomains
       if (typeof saved.systemProxyEnabled === 'boolean') systemProxyEnabled.value = saved.systemProxyEnabled
       if (typeof saved.tunEnabled === 'boolean') tunEnabled.value = saved.tunEnabled
       if (saved.controller) controllerInfo = saved.controller
@@ -288,6 +290,7 @@ function serializeRules() {
     upstreams: rules.upstreams.map(upstream => ({ ...upstream })),
     fallback: rules.fallback,
     cnFallback: rules.cnFallback,
+    bypassDomains: rules.bypassDomains,
     systemProxyEnabled: systemProxyEnabled.value,
     tunEnabled: tunEnabled.value,
   }

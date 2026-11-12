@@ -57,6 +57,10 @@ fn default_cn_fallback() -> String {
     "wlan".into()
 }
 
+fn default_bypass_domains() -> String {
+    "localhost\n*.localhost\nlocalhost.*\nlocalhost.v.qq.com\nlocalhost.weixin.qq.com\n*.local\n*.lan".into()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RulesPayload {
@@ -65,6 +69,8 @@ pub struct RulesPayload {
     pub fallback: String,
     #[serde(default = "default_cn_fallback")]
     pub cn_fallback: String,
+    #[serde(default = "default_bypass_domains")]
+    pub bypass_domains: String,
     #[serde(default = "default_enabled")]
     pub system_proxy_enabled: bool,
     #[serde(default)]
@@ -111,6 +117,7 @@ impl Default for RulesPayload {
             }],
             fallback: "flyingbird".into(),
             cn_fallback: "wlan".into(),
+            bypass_domains: default_bypass_domains(),
             system_proxy_enabled: true,
             tun_enabled: false,
             running: false,
@@ -316,6 +323,7 @@ pub fn save_rules_to_disk(app: &AppHandle, rules: &RulesPayload) -> Result<(), S
     );
     map.insert("fallback".into(), json!(rules.fallback));
     map.insert("cnFallback".into(), json!(rules.cn_fallback));
+    map.insert("bypassDomains".into(), json!(rules.bypass_domains));
     map.insert("systemProxyEnabled".into(), json!(rules.system_proxy_enabled));
     map.insert("tunEnabled".into(), json!(rules.tun_enabled));
 

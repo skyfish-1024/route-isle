@@ -22,12 +22,16 @@ const addLabel = computed(() => tab.value === 'rules' ? '添加规则组' : '添
 const draft = ref(null)
 const upstreamDraft = ref(null)
 const editingUpstream = ref(false)
+const editingBypass = ref(false)
+const bypassDraft = ref('')
 const geoipStatus = ref({ exists: false, size: 0, updatedAt: 0 })
 const geoipBusy = ref(false)
 const geoipNote = ref('')
 const logStats = ref({ fileCount: 0, totalBytes: 0 })
 const logsBusy = ref(false)
 const logsNote = ref('')
+const coreBusy = ref(false)
+const coreNote = ref('')
 const targets = computed(() => [
   { id: 'system', name: '直连 · Windows 选路' },
   { id: 'wlan', name: '直连 · WLAN' },
@@ -53,9 +57,23 @@ watch(tab, (next) => {
   if (next === 'settings') {
     geoipNote.value = ''
     logsNote.value = ''
+    coreNote.value = ''
     loadSettingsInfo()
   }
 })
+async function restartCore() {
+  if (!desktop || !props.running || coreBusy.value) return
+  coreBusy.value = true
+  coreNote.value = '正在重启内核...'
+  try {
+    await invoke('restart_proxy')
+    coreNote.value = '内核已重启'
+  } catch (err) {
+    coreNote.value = String(err || '重启失败')
+  } finally {
+    coreBusy.value = false
+  }
+}
 async function refreshGeoip() {
   if (!desktop || geoipBusy.value) return
   geoipBusy.value = true
@@ -84,6 +102,14 @@ async function clearLogsNow() {
   } finally {
     logsBusy.value = false
   }
+}
+function editBypass() {
+  bypassDraft.value = props.rules.bypassDomains ?? ''
+  editingBypass.value = true
+}
+function saveBypass() {
+  props.rules.bypassDomains = [...new Set(domainsOf(bypassDraft.value))].join('\n')
+  editingBypass.value = false
 }
 function formatGeoipMeta() {
   if (!geoipStatus.value.exists) return '未检测到数据库'
@@ -224,12 +250,32 @@ function removeUpstream(id) {
           </div>
           <div class="rule-row setting-row">
             <div class="group-summary">
+              <strong>跳过代理域名</strong>
+              <small>{{ domainsOf(rules.bypassDomains).length }} 条 · 跳过 Fake-IP 与系统代理</small>
+            </div>
+            <button type="button" class="setting-btn" @click="editBypass">
+              <Pencil :size="13" aria-hidden="true" />
+              <span>编辑</span>
+            </button>
+          </div>
+          <div class="rule-row setting-row">
+            <div class="group-summary">
               <strong>GeoIP 数据库</strong>
               <small>{{ geoipNote || formatGeoipMeta() }}</small>
             </div>
             <button type="button" class="setting-btn" :disabled="geoipBusy || !desktop" @click="refreshGeoip">
               <RefreshCw :size="13" :class="{ 'is-spinning': geoipBusy }" aria-hidden="true" />
               <span>{{ geoipBusy ? '刷新中' : '刷新数据库' }}</span>
+            </button>
+          </div>
+          <div class="rule-row setting-row">
+            <div class="group-summary">
+              <strong>代理内核</strong>
+              <small>{{ coreNote || (running ? 'ApexCore 运行中' : 'ApexCore 未启动') }}</small>
+            </div>
+            <button type="button" class="setting-btn" :disabled="coreBusy || !desktop || !running" @click="restartCore">
+              <RefreshCw :size="13" :class="{ 'is-spinning': coreBusy }" aria-hidden="true" />
+              <span>{{ coreBusy ? '重启中' : '重启内核' }}</span>
             </button>
           </div>
           <div class="rule-row setting-row">
@@ -304,6 +350,25 @@ function removeUpstream(id) {
               <div class="editor-buttons">
                 <DialogClose type="button">取消</DialogClose>
                 <button type="submit" class="action" :disabled="!upstreamDraft.name.trim() || !upstreamDraft.address.trim()">保存</button>
+              </div>
+            </div>
+          </form>
+        </DialogContent>
+      </DialogPortal>
+    </DialogRoot>
+    <DialogRoot v-model:open="editingBypass">
+      <DialogPortal>
+        <DialogOverlay class="editor-overlay" />
+        <DialogContent as-child>
+          <form class="editor" :data-theme="theme" @submit.prevent="saveBypass">
+            <DialogTitle class="editor-title">跳过代理域名</DialogTitle>
+            <DialogDescription class="editor-note">跳过 TUN Fake-IP 并写入系统代理绕过列表，每行一条，支持通配符 *。</DialogDescription>
+            <label>域名列表 <textarea v-model="bypassDraft" rows="5" placeholder="localhost&#10;*.localhost&#10;localhost.*&#10;*.local&#10;*.lan" /></label>
+            <div class="editor-actions">
+              <span />
+              <div class="editor-buttons">
+                <DialogClose as-child><button type="button">取消</button></DialogClose>
+                <button class="action" type="submit">保存</button>
               </div>
             </div>
           </form>

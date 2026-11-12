@@ -328,6 +328,25 @@ fn find_local_port_process_names(ports: &[u16]) -> Vec<String> {
     win_net::find_local_port_process_names(ports)
 }
 
+fn domain_to_rule_and_dns(domain: &str, outbound: &str) -> (String, String) {
+    if let Some(suffix) = domain.strip_prefix("*.") {
+        if !suffix.is_empty() && !suffix.contains('*') && !suffix.contains('?') {
+            return (
+                format!("DOMAIN-SUFFIX,{suffix},{outbound}"),
+                format!("+.{suffix}"),
+            );
+        }
+    }
+    if domain.contains('*') || domain.contains('?') {
+        (
+            format!("DOMAIN-WILDCARD,{domain},{outbound}"),
+            domain.to_string(),
+        )
+    } else {
+        (format!("DOMAIN,{domain},{outbound}"), domain.to_string())
+    }
+}
+
 pub fn build_mihomo_config(payload: &RulesPayload) -> Result<Value, String> {
     let physical_iface = win_net::detect_physical_interface();
     let mut proxies = vec![json!({
@@ -386,6 +405,16 @@ pub fn build_mihomo_config(payload: &RulesPayload) -> Result<Value, String> {
     let mut dns_policy = Map::new();
     let mut domain_entries: Vec<(String, String)> = Vec::new();
     let mut seen_domains = HashMap::new();
+    let bypass_list = split_domains(&payload.bypass_domains);
+
+    for domain in &bypass_list {
+        if seen_domains.contains_key(domain) {
+            continue;
+        }
+        seen_domains.insert(domain.clone(), true);
+        let (rule_line, _) = domain_to_rule_and_dns(domain, "DIRECT");
+        domain_entries.push((domain.clone(), rule_line));
+    }
 
     for group in &payload.groups {
         if !group.enabled {
@@ -398,26 +427,7 @@ pub fn build_mihomo_config(payload: &RulesPayload) -> Result<Value, String> {
                 continue;
             }
             seen_domains.insert(domain.clone(), true);
-            let (rule_line, dns_key) = if let Some(suffix) = domain.strip_prefix("*.") {
-                if !suffix.is_empty() && !suffix.contains('*') && !suffix.contains('?') {
-                    (
-                        format!("DOMAIN-SUFFIX,{suffix},{outbound}"),
-                        format!("+.{suffix}"),
-                    )
-                } else {
-                    (
-                        format!("DOMAIN-WILDCARD,{domain},{outbound}"),
-                        domain.clone(),
-                    )
-                }
-            } else if domain.contains('*') || domain.contains('?') {
-                (
-                    format!("DOMAIN-WILDCARD,{domain},{outbound}"),
-                    domain.clone(),
-                )
-            } else {
-                (format!("DOMAIN,{domain},{outbound}"), domain.clone())
-            };
+            let (rule_line, dns_key) = domain_to_rule_and_dns(&domain, &outbound);
             if group.target != "reject" {
                 if let Some(ref doh_out) = reachable_doh_outbound {
                     dns_policy.insert(
@@ -471,6 +481,7 @@ pub fn build_mihomo_config(payload: &RulesPayload) -> Result<Value, String> {
             "enable": true,
             "enhanced-mode": "fake-ip",
             "fake-ip-range": "198.18.0.1/16",
+            "fake-ip-filter": bypass_list,
             "default-nameserver": ["223.5.5.5", "119.29.29.29"],
             "nameserver": nameservers,
             "nameserver-policy": dns_policy

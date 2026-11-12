@@ -2,7 +2,7 @@ use crate::{
     config::{build_mihomo_config, controller_request, is_tcp_reachable},
     models::{
         data_dir, load_rules_from_disk, now_millis, resolve_core_path, resolve_geoip_path,
-        save_rules_to_disk, RulesPayload, CONTROLLER_PORT, PROXY_PORT,
+        save_rules_to_disk, split_domains, RulesPayload, CONTROLLER_PORT, PROXY_PORT,
     },
     sysproxy::{enable_system_proxy, restore_system_proxy},
 };
@@ -557,7 +557,8 @@ fn save_rules_sync(
         }
         RunningAction::HotReload(config_path) => {
             if rules.system_proxy_enabled {
-                enable_system_proxy(app)?;
+                let bypass = split_domains(&rules.bypass_domains);
+                enable_system_proxy(app, &bypass)?;
             } else {
                 restore_system_proxy(app)?;
             }
@@ -682,7 +683,8 @@ fn start_proxy_locked(
     }
 
     if rules.system_proxy_enabled {
-        if let Err(err) = enable_system_proxy(app) {
+        let bypass = split_domains(&rules.bypass_domains);
+        if let Err(err) = enable_system_proxy(app, &bypass) {
             let _ = child.kill();
             let _ = child.wait();
             let _ = fs::remove_dir_all(&run_dir);
@@ -722,6 +724,17 @@ pub async fn stop_proxy(app: AppHandle) -> Result<(), String> {
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn restart_proxy(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let rules = load_rules_from_disk(&app);
+        let state = app.state::<ProxyManager>();
+        start_proxy_sync(&app, rules, &state)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Clone, Serialize)]

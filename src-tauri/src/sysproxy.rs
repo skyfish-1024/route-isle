@@ -4,7 +4,7 @@ use std::{fs, path::PathBuf};
 use sysproxy::Sysproxy;
 use tauri::AppHandle;
 
-const DEFAULT_BYPASS: &str = "localhost;*.localhost;tauri.localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;<local>";
+const DEFAULT_BYPASS: &str = "localhost;*.localhost;localhost.*;tauri.localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;<local>";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SysproxyBackup {
@@ -27,7 +27,30 @@ fn read_current_sysproxy() -> Sysproxy {
     })
 }
 
-pub fn enable_system_proxy(app: &AppHandle) -> Result<(), String> {
+fn merge_bypass(base: &str, extra: &[String]) -> String {
+    let mut parts: Vec<String> = base
+        .split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    let has_local = parts.iter().any(|p| p.eq_ignore_ascii_case("<local>"));
+    if has_local {
+        parts.retain(|p| !p.eq_ignore_ascii_case("<local>"));
+    }
+    for item in extra {
+        let trimmed = item.trim();
+        if !trimmed.is_empty() && !parts.iter().any(|p| p.eq_ignore_ascii_case(trimmed)) {
+            parts.push(trimmed.to_string());
+        }
+    }
+    if has_local {
+        parts.push("<local>".to_string());
+    }
+    parts.join(";")
+}
+
+pub fn enable_system_proxy(app: &AppHandle, extra_bypass: &[String]) -> Result<(), String> {
     if !Sysproxy::is_support() {
         return Ok(());
     }
@@ -61,15 +84,16 @@ pub fn enable_system_proxy(app: &AppHandle) -> Result<(), String> {
         }
     }
 
+    let base_bypass = if current.bypass.trim().is_empty() {
+        DEFAULT_BYPASS
+    } else {
+        &current.bypass
+    };
     let target = Sysproxy {
         enable: true,
         host: "127.0.0.1".into(),
         port: PROXY_PORT,
-        bypass: if current.bypass.trim().is_empty() {
-            DEFAULT_BYPASS.into()
-        } else {
-            current.bypass
-        },
+        bypass: merge_bypass(base_bypass, extra_bypass),
     };
     target
         .set_system_proxy()
