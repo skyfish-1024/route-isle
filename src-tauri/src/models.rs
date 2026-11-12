@@ -53,12 +53,18 @@ impl Default for ControllerInfo {
     }
 }
 
+fn default_cn_fallback() -> String {
+    "wlan".into()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RulesPayload {
     pub groups: Vec<RuleGroup>,
     pub upstreams: Vec<Upstream>,
     pub fallback: String,
+    #[serde(default = "default_cn_fallback")]
+    pub cn_fallback: String,
     #[serde(default = "default_enabled")]
     pub system_proxy_enabled: bool,
     #[serde(default)]
@@ -78,14 +84,21 @@ impl Default for RulesPayload {
                 RuleGroup {
                     id: "system".into(),
                     name: "内网服务".into(),
-                    domains: "intranet.example.com".into(),
+                    domains: "intranet.example.com\nlocalhost\n*.localhost\nlocalhost.*".into(),
                     target: "system".into(),
                     enabled: true,
                 },
                 RuleGroup {
                     id: "direct".into(),
                     name: "WLAN 直连".into(),
-                    domains: "direct.example.com\nippure.com\nipv6.icanhazip.com\napi.ipify.org".into(),
+                    domains: "*.direct.example.com\n*.ippure.com\nipv6.icanhazip.com\napi.ipify.org".into(),
+                    target: "wlan".into(),
+                    enabled: true,
+                },
+                RuleGroup {
+                    id: "video".into(),
+                    name: "国内视频".into(),
+                    domains: "*.bilibili.com\n*.bilivideo.com\n*.bilivideo.cn\n*.hdslb.com\n*.biliapi.net\n*.biliapi.com\n*.acgvideo.com\n*.szbdyd.com\n*.iqiyi.com\n*.iqiyipic.com\n*.qy.net\n*.qiyipic.com\n*.71.am\nv.qq.com\n*.video.qq.com\n*.gtimg.com\n*.gtimg.cn\n*.qpic.cn\n*.smtcdns.com\n*.smtcdns.net\n*.youku.com\n*.ykimg.com\n*.tudou.com\n*.cibntv.net\n*.douyin.com\n*.douyinvod.com\n*.douyinpic.com\n*.ixigua.com\n*.bytevcloudcdn.com\n*.pstatp.com\n*.kuaishou.com\n*.kwai.com\n*.yximgs.com\n*.mgtv.com\n*.hunantv.com\n*.hitv.com\n*.yangshipin.cn\n*.cctv.com\n*.cctvpic.com\n*.miguvideo.com\n*.tv.sohu.com\n*.douyu.com\n*.douyucdn.cn\n*.huya.com\n*.msstatic.com".into(),
                     target: "wlan".into(),
                     enabled: true,
                 },
@@ -97,6 +110,7 @@ impl Default for RulesPayload {
                 address: "127.0.0.1:7890".into(),
             }],
             fallback: "flyingbird".into(),
+            cn_fallback: "wlan".into(),
             system_proxy_enabled: true,
             tun_enabled: false,
             running: false,
@@ -124,13 +138,17 @@ pub fn split_domains(text: &str) -> Vec<String> {
     out
 }
 
+pub fn is_dev_workspace(path: &Path) -> bool {
+    path.join("package.json").exists() && path.join("src-tauri").exists()
+}
+
 pub fn project_root(app: &AppHandle) -> PathBuf {
     if let Ok(cwd) = std::env::current_dir() {
-        if cwd.join("Start-Prototype.ps1").exists() || cwd.join("package.json").exists() {
+        if is_dev_workspace(&cwd) {
             return cwd;
         }
         if let Some(parent) = cwd.parent() {
-            if parent.join("Start-Prototype.ps1").exists() || parent.join("package.json").exists() {
+            if is_dev_workspace(parent) {
                 return parent.to_path_buf();
             }
         }
@@ -146,13 +164,40 @@ pub fn project_root(app: &AppHandle) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+pub fn data_dir(app: &AppHandle) -> PathBuf {
+    if let Ok(cwd) = std::env::current_dir() {
+        if is_dev_workspace(&cwd) {
+            return cwd;
+        }
+        if let Some(parent) = cwd.parent() {
+            if is_dev_workspace(parent) {
+                return parent.to_path_buf();
+            }
+        }
+    }
+    if let Ok(cfg_dir) = app.path().app_config_dir() {
+        if fs::create_dir_all(&cfg_dir).is_ok() {
+            return cfg_dir;
+        }
+    }
+    project_root(app)
+}
+
 pub fn rules_file_path(app: &AppHandle) -> PathBuf {
-    project_root(app).join("proxy-rules.json")
+    let dir = data_dir(app);
+    let target = dir.join("proxy-rules.json");
+    if !target.exists() {
+        let legacy = project_root(app).join("proxy-rules.json");
+        if legacy != target && legacy.exists() {
+            let _ = fs::copy(&legacy, &target);
+        }
+    }
+    target
 }
 
 pub fn resolve_core_path(app: &AppHandle) -> Result<PathBuf, String> {
     let root = project_root(app);
-    let rules_path = root.join("proxy-rules.json");
+    let rules_path = rules_file_path(app);
     if let Ok(raw) = fs::read_to_string(&rules_path) {
         if let Ok(val) = serde_json::from_str::<Value>(&raw) {
             if let Some(core_str) = val.get("Core").and_then(Value::as_str) {
@@ -180,11 +225,32 @@ pub fn resolve_core_path(app: &AppHandle) -> Result<PathBuf, String> {
     Err("未找到 ApexCore.exe 内核文件".into())
 }
 
+pub fn resolve_geoip_path(app: &AppHandle) -> Option<PathBuf> {
+    let root = project_root(app);
+    let mut candidates = vec![
+        data_dir(app).join("Country.mmdb"),
+        root.join("Country.mmdb"),
+    ];
+    if let Ok(res_dir) = app.path().resource_dir() {
+        candidates.push(res_dir.join("Country.mmdb"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("Country.mmdb"));
+        }
+    }
+    candidates.into_iter().find(|p| p.exists())
+}
+
 pub fn load_rules_from_disk(app: &AppHandle) -> RulesPayload {
     let path = rules_file_path(app);
     if let Ok(raw) = fs::read_to_string(&path) {
         if let Ok(mut payload) = serde_json::from_str::<RulesPayload>(&raw) {
             if !payload.groups.is_empty() {
+                if let Some(id) = payload.fallback.strip_prefix("smart:") {
+                    payload.fallback = id.to_string();
+                    payload.cn_fallback = "wlan".into();
+                }
                 payload.controller = ControllerInfo::default();
                 return payload;
             }
@@ -249,6 +315,7 @@ pub fn save_rules_to_disk(app: &AppHandle, rules: &RulesPayload) -> Result<(), S
         serde_json::to_value(&rules.upstreams).map_err(|e| e.to_string())?,
     );
     map.insert("fallback".into(), json!(rules.fallback));
+    map.insert("cnFallback".into(), json!(rules.cn_fallback));
     map.insert("systemProxyEnabled".into(), json!(rules.system_proxy_enabled));
     map.insert("tunEnabled".into(), json!(rules.tun_enabled));
 

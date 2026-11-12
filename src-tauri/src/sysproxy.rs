@@ -1,10 +1,10 @@
-use crate::models::{project_root, PROXY_PORT};
+use crate::models::{data_dir, PROXY_PORT};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 use sysproxy::Sysproxy;
 use tauri::AppHandle;
 
-const DEFAULT_BYPASS: &str = "localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;<local>";
+const DEFAULT_BYPASS: &str = "localhost;*.localhost;tauri.localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;<local>";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SysproxyBackup {
@@ -15,7 +15,7 @@ struct SysproxyBackup {
 }
 
 fn backup_file_path(app: &AppHandle) -> PathBuf {
-    project_root(app).join(".sysproxy-backup.json")
+    data_dir(app).join(".sysproxy-backup.json")
 }
 
 fn read_current_sysproxy() -> Sysproxy {

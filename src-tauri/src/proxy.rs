@@ -1,8 +1,8 @@
 use crate::{
     config::{build_mihomo_config, controller_request, is_tcp_reachable},
     models::{
-        load_rules_from_disk, now_millis, resolve_core_path, save_rules_to_disk, RulesPayload,
-        CONTROLLER_PORT, PROXY_PORT,
+        data_dir, load_rules_from_disk, now_millis, resolve_core_path, resolve_geoip_path,
+        save_rules_to_disk, RulesPayload, CONTROLLER_PORT, PROXY_PORT,
     },
     sysproxy::{enable_system_proxy, restore_system_proxy},
 };
@@ -36,8 +36,23 @@ unsafe extern "system" {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> isize;
+    fn TerminateProcess(process_handle: isize, exit_code: u32) -> i32;
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
     fn CloseHandle(handle: isize) -> i32;
+    fn CreateMutexW(
+        lp_mutex_attributes: *const std::ffi::c_void,
+        b_initial_owner: i32,
+        lp_name: *const u16,
+    ) -> isize;
+    fn CreateEventW(
+        lp_event_attributes: *const std::ffi::c_void,
+        b_manual_reset: i32,
+        b_initial_state: i32,
+        lp_name: *const u16,
+    ) -> isize;
+    fn OpenEventW(dw_desired_access: u32, b_inherit_handle: i32, lp_name: *const u16) -> isize;
+    fn SetEvent(h_event: isize) -> i32;
+    fn GetLastError() -> u32;
 }
 
 static PENDING_AUTO_START: AtomicBool = AtomicBool::new(false);
@@ -202,7 +217,7 @@ pub fn init_from_args() {
     if let Ok(raw) = fs::read_to_string(&handoff_path) {
         let _ = fs::remove_file(&handoff_path);
         if let Ok(handoff) = serde_json::from_str::<ElevateHandoff>(&raw) {
-            if now_millis().saturating_sub(handoff.ts) <= 15_000 {
+            if now_millis().saturating_sub(handoff.ts) <= 60_000 {
                 if wait_pid.is_none() {
                     wait_pid = Some(handoff.pid);
                 }
@@ -230,6 +245,63 @@ pub fn init_from_args() {
     }
 }
 
+pub fn acquire_single_instance_lock() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        const ERROR_ALREADY_EXISTS: u32 = 183;
+        const EVENT_MODIFY_STATE: u32 = 0x0002;
+        let name: Vec<u16> = "Local\\RouteIsleSingleInstanceMutex\0".encode_utf16().collect();
+        unsafe {
+            let handle = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
+            if handle == 0 {
+                return true;
+            }
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                let _ = CloseHandle(handle);
+                let wake_name: Vec<u16> = "Local\\RouteIsleWakeEvent\0".encode_utf16().collect();
+                let ev = OpenEventW(EVENT_MODIFY_STATE, 0, wake_name.as_ptr());
+                if ev != 0 {
+                    let _ = SetEvent(ev);
+                    let _ = CloseHandle(ev);
+                }
+                return false;
+            }
+            // Intentionally keep `handle` open for the process lifetime.
+            true
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
+}
+
+pub fn spawn_wake_listener(app: AppHandle) {
+    #[cfg(target_os = "windows")]
+    thread::spawn(move || {
+        const INFINITE: u32 = 0xFFFF_FFFF;
+        let wake_name: Vec<u16> = "Local\\RouteIsleWakeEvent\0".encode_utf16().collect();
+        let ev = unsafe { CreateEventW(std::ptr::null(), 0, 0, wake_name.as_ptr()) };
+        if ev == 0 {
+            return;
+        }
+        loop {
+            let wait = unsafe { WaitForSingleObject(ev, INFINITE) };
+            if wait != 0 {
+                break;
+            }
+            if let Some(capsule) = app.get_webview_window("main") {
+                let _ = capsule.show();
+                let _ = capsule.set_focus();
+            }
+        }
+    });
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+    }
+}
+
 pub fn is_current_process_admin() -> bool {
     #[cfg(target_os = "windows")]
     {
@@ -250,10 +322,31 @@ pub struct ProxySession {
 }
 
 #[derive(Default)]
-pub struct ProxyManager(pub Mutex<Option<ProxySession>>);
+pub struct ProxyManager {
+    pub session: Mutex<Option<ProxySession>>,
+    pub op_lock: Mutex<()>,
+}
 
-pub fn stop_proxy_internal(app: &AppHandle, state: &ProxyManager) {
-    let mut guard = state.0.lock().expect("proxy lock");
+fn terminate_pid(pid: u32) {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        const PROCESS_TERMINATE: u32 = 0x0001;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        let handle = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid);
+        if handle != 0 {
+            let _ = TerminateProcess(handle, 1);
+            let _ = WaitForSingleObject(handle, 1500);
+            let _ = CloseHandle(handle);
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = pid;
+    }
+}
+
+fn stop_proxy_locked(app: &AppHandle, state: &ProxyManager) {
+    let mut guard = state.session.lock().expect("proxy lock");
     let _ = restore_system_proxy(app);
     if let Some(mut session) = guard.take() {
         let _ = fs::write(&session.stop_flag, "stop");
@@ -261,6 +354,11 @@ pub fn stop_proxy_internal(app: &AppHandle, state: &ProxyManager) {
             let _ = child.kill();
             let _ = child.wait();
         } else {
+            if let Ok(raw_pid) = fs::read_to_string(session.run_dir.join("core.pid")) {
+                if let Ok(pid) = raw_pid.trim().parse::<u32>() {
+                    terminate_pid(pid);
+                }
+            }
             for _ in 0..15 {
                 if !is_tcp_reachable("127.0.0.1", PROXY_PORT, 60) {
                     break;
@@ -272,9 +370,14 @@ pub fn stop_proxy_internal(app: &AppHandle, state: &ProxyManager) {
     }
 }
 
+pub fn stop_proxy_internal(app: &AppHandle, state: &ProxyManager) {
+    let _op = state.op_lock.lock().expect("proxy op lock");
+    stop_proxy_locked(app, state);
+}
+
 pub fn ensure_or_adopt_session(state: &ProxyManager, rules: &RulesPayload) -> bool {
     {
-        let mut guard = state.0.lock().expect("proxy lock");
+        let mut guard = state.session.lock().expect("proxy lock");
         if let Some(ref mut session) = *guard {
             if let Some(ref mut child) = session.child {
                 if let Ok(Some(_)) = child.try_wait() {
@@ -324,7 +427,7 @@ pub fn ensure_or_adopt_session(state: &ProxyManager, rules: &RulesPayload) -> bo
     let config_path = run_dir.join("config.json");
     let stop_flag = run_dir.join("stop.flag");
 
-    let mut guard = state.0.lock().expect("proxy lock");
+    let mut guard = state.session.lock().expect("proxy lock");
     *guard = Some(ProxySession {
         child: None,
         tun_enabled: rules.tun_enabled,
@@ -347,7 +450,7 @@ fn relaunch_elevated(
     save_rules_to_disk(app, rules)?;
 
     if try_launch_via_scheduled_task(&exe_path, &cwd, auto_start) {
-        stop_proxy_internal(app, state);
+        stop_proxy_locked(app, state);
         app.exit(0);
         return Ok(());
     }
@@ -388,12 +491,13 @@ fn relaunch_elevated(
         return Err("已取消管理员授权，开启 TUN 虚拟网卡需要管理员权限".into());
     }
 
-    stop_proxy_internal(app, state);
+    stop_proxy_locked(app, state);
     app.exit(0);
     Ok(())
 }
 
 fn load_rules_sync(app: &AppHandle, state: &ProxyManager) -> RulesPayload {
+    let _op = state.op_lock.lock().expect("proxy op lock");
     let mut payload = load_rules_from_disk(app);
     payload.running = ensure_or_adopt_session(state, &payload);
     payload.auto_start = PENDING_AUTO_START.swap(false, Ordering::SeqCst);
@@ -419,6 +523,8 @@ fn save_rules_sync(
     was_running: bool,
     state: &ProxyManager,
 ) -> Result<(), String> {
+    let _op = state.op_lock.lock().expect("proxy op lock");
+
     if rules.tun_enabled && !is_current_process_admin() {
         return relaunch_elevated(app, &rules, state, was_running);
     }
@@ -432,7 +538,7 @@ fn save_rules_sync(
     }
 
     let action = {
-        let guard = state.0.lock().expect("proxy lock");
+        let guard = state.session.lock().expect("proxy lock");
         if let Some(ref session) = *guard {
             if session.tun_enabled != rules.tun_enabled {
                 RunningAction::RestartCore
@@ -447,7 +553,7 @@ fn save_rules_sync(
     match action {
         RunningAction::None => {}
         RunningAction::RestartCore => {
-            start_proxy_sync(app, rules, state)?;
+            start_proxy_locked(app, rules, state)?;
         }
         RunningAction::HotReload(config_path) => {
             if rules.system_proxy_enabled {
@@ -455,15 +561,12 @@ fn save_rules_sync(
             } else {
                 restore_system_proxy(app)?;
             }
-            if let Ok(config) = build_mihomo_config(&rules) {
-                if let Ok(cfg_text) = serde_json::to_string_pretty(&config) {
-                    if fs::write(&config_path, cfg_text).is_ok() {
-                        let reload_body =
-                            json!({ "path": config_path.to_string_lossy() }).to_string();
-                        let _ = controller_request("PUT", "/configs?force=true", Some(&reload_body));
-                    }
-                }
-            }
+            let config = build_mihomo_config(&rules)?;
+            let cfg_text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+            fs::write(&config_path, cfg_text).map_err(|e| format!("写入运行配置失败：{e}"))?;
+            let reload_body = json!({ "path": config_path.to_string_lossy() }).to_string();
+            controller_request("PUT", "/configs?force=true", Some(&reload_body))
+                .map_err(|e| format!("热重载配置失败：{e}"))?;
         }
     }
 
@@ -489,17 +592,34 @@ fn start_proxy_sync(
     rules: RulesPayload,
     state: &ProxyManager,
 ) -> Result<(), String> {
+    let _op = state.op_lock.lock().expect("proxy op lock");
+    start_proxy_locked(app, rules, state)
+}
+
+fn start_proxy_locked(
+    app: &AppHandle,
+    rules: RulesPayload,
+    state: &ProxyManager,
+) -> Result<(), String> {
     if rules.tun_enabled && !is_current_process_admin() {
         return relaunch_elevated(app, &rules, state, true);
     }
 
-    stop_proxy_internal(app, state);
+    stop_proxy_locked(app, state);
 
     let core_path = resolve_core_path(app)?;
+    let geoip_path = resolve_geoip_path(app);
+    if rules.cn_fallback != rules.fallback && geoip_path.is_none() {
+        return Err("未找到 Country.mmdb GeoIP 数据库文件".into());
+    }
     let config = build_mihomo_config(&rules)?;
 
     let run_dir = std::env::temp_dir().join(format!("routeisle-{}", now_millis()));
     fs::create_dir_all(&run_dir).map_err(|e| e.to_string())?;
+    if let Some(geoip_src) = geoip_path {
+        fs::copy(&geoip_src, run_dir.join("Country.mmdb"))
+            .map_err(|e| format!("复制 GeoIP 数据库失败：{e}"))?;
+    }
     let config_path = run_dir.join("config.json");
     let stop_flag = run_dir.join("stop.flag");
     let config_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
@@ -536,22 +656,23 @@ fn start_proxy_sync(
     let mut child = child_cmd
         .spawn()
         .map_err(|e| format!("启动内核失败：{e}"))?;
+    let _ = fs::write(run_dir.join("core.pid"), child.id().to_string());
 
     let mut ready = false;
-    for _ in 0..30 {
+    for _ in 0..85 {
         if let Ok(Some(status)) = child.try_wait() {
             let _ = fs::remove_dir_all(&run_dir);
             return Err(format!(
                 "内核进程异常退出（{status}），请检查端口 {PROXY_PORT} 是否被占用"
             ));
         }
-        if is_tcp_reachable("127.0.0.1", PROXY_PORT, 100)
-            && is_tcp_reachable("127.0.0.1", CONTROLLER_PORT, 100)
+        if is_tcp_reachable("127.0.0.1", PROXY_PORT, 50)
+            && is_tcp_reachable("127.0.0.1", CONTROLLER_PORT, 50)
         {
             ready = true;
             break;
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(35));
     }
     if !ready {
         let _ = child.kill();
@@ -571,7 +692,7 @@ fn start_proxy_sync(
         let _ = restore_system_proxy(app);
     }
 
-    let mut guard = state.0.lock().expect("proxy lock");
+    let mut guard = state.session.lock().expect("proxy lock");
     *guard = Some(ProxySession {
         child: Some(child),
         tun_enabled: rules.tun_enabled,
@@ -601,4 +722,125 @@ pub async fn stop_proxy(app: AppHandle) -> Result<(), String> {
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeoIpStatus {
+    pub exists: bool,
+    pub size: u64,
+    pub updated_at: u64,
+    pub path: String,
+    pub restarted: bool,
+}
+
+fn read_geoip_status(app: &AppHandle, restarted: bool) -> GeoIpStatus {
+    if let Some(path) = resolve_geoip_path(app) {
+        if let Ok(meta) = fs::metadata(&path) {
+            let updated_at = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            return GeoIpStatus {
+                exists: true,
+                size: meta.len(),
+                updated_at,
+                path: path.to_string_lossy().into_owned(),
+                restarted,
+            };
+        }
+    }
+    GeoIpStatus {
+        exists: false,
+        size: 0,
+        updated_at: 0,
+        path: String::new(),
+        restarted,
+    }
+}
+
+#[tauri::command]
+pub async fn get_geoip_status(app: AppHandle) -> Result<GeoIpStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || Ok(read_geoip_status(&app, false)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn download_geoip_with_curl(tmp_path: &std::path::Path, proxy_url: Option<&str>) -> Result<(), String> {
+    const GEOIP_URL: &str =
+        "https://github.com/Loyalsoldier/geoip/releases/latest/download/Country-only-cn-private.mmdb";
+    let mut cmd = Command::new("curl.exe");
+    cmd.args(["-sSL", "--fail", "--max-time", "25"]);
+    if let Some(proxy) = proxy_url {
+        cmd.args(["--proxy", proxy]);
+    }
+    cmd.arg("-o").arg(tmp_path).arg(GEOIP_URL);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = cmd.output().map_err(|e| format!("无法启动 curl.exe：{e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("下载失败（退出码 {:?}）", out.status.code())
+        } else {
+            stderr
+        });
+    }
+    let meta = fs::metadata(tmp_path).map_err(|e| e.to_string())?;
+    if meta.len() < 50_000 {
+        return Err("下载的 GeoIP 数据库文件异常偏小，已取消替换".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn refresh_geoip_db(app: AppHandle) -> Result<GeoIpStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = data_dir(&app);
+        fs::create_dir_all(&dir).map_err(|e| format!("创建数据目录失败：{e}"))?;
+        let target = dir.join("Country.mmdb");
+        let tmp = dir.join("Country.mmdb.tmp");
+        let _ = fs::remove_file(&tmp);
+
+        let is_running = {
+            let state = app.state::<ProxyManager>();
+            let guard = state.session.lock().expect("proxy lock");
+            guard.is_some()
+        };
+
+        let proxy_url = format!("http://127.0.0.1:{PROXY_PORT}");
+        let download_res = download_geoip_with_curl(&tmp, None).or_else(|direct_err| {
+            if is_running {
+                download_geoip_with_curl(&tmp, Some(&proxy_url))
+            } else {
+                Err(direct_err)
+            }
+        });
+        if let Err(err) = download_res {
+            let _ = fs::remove_file(&tmp);
+            return Err(format!("刷新 GeoIP 数据库失败：{err}"));
+        }
+
+        if target.exists() {
+            let _ = fs::remove_file(&target);
+        }
+        fs::rename(&tmp, &target).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            format!("保存 GeoIP 数据库失败：{e}")
+        })?;
+
+        let mut restarted = false;
+        if is_running {
+            let rules = load_rules_from_disk(&app);
+            let state = app.state::<ProxyManager>();
+            start_proxy_sync(&app, rules, &state)?;
+            restarted = true;
+        }
+
+        Ok(read_geoip_status(&app, restarted))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

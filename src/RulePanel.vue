@@ -1,14 +1,18 @@
 <script setup>
-import { Moon, Pencil, Plus, Sun } from '@lucide/vue'
-import { computed, ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
+import { Monitor, Moon, Pencil, Plus, RefreshCw, Sun, Trash2 } from '@lucide/vue'
+import { computed, ref, watch } from 'vue'
 import { DialogClose, DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle, SwitchRoot, SwitchThumb, TabsContent, TabsList, TabsRoot, TabsTrigger } from 'reka-ui'
 import DeleteConfirm from './DeleteConfirm.vue'
+import HistoryPanel from './HistoryPanel.vue'
 import PanelSelect from './PanelSelect.vue'
 import TrafficPanel from './TrafficPanel.vue'
+import { domainsOf, formatBytes } from './utils/format'
 
-const props = defineProps({ rules: { type: Object, required: true }, running: Boolean, toggling: Boolean, traffic: { type: Object, required: true }, sessions: { type: Array, required: true } })
-const emit = defineEmits(['toggle'])
-const theme = defineModel('theme')
+const props = defineProps({ rules: { type: Object, required: true }, theme: { type: String, required: true }, running: Boolean, toggling: Boolean, traffic: { type: Object, required: true }, sessions: { type: Array, required: true } })
+const emit = defineEmits(['toggle', 'logs-cleared'])
+const desktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+const themeMode = defineModel('themeMode', { type: String, default: 'system' })
 const systemProxyEnabled = defineModel('systemProxyEnabled', { type: Boolean, default: true })
 const tunEnabled = defineModel('tunEnabled', { type: Boolean })
 const protocols = [{ id: 'http', name: 'HTTP' }, { id: 'socks5', name: 'SOCKS5' }]
@@ -18,13 +22,77 @@ const addLabel = computed(() => tab.value === 'rules' ? '添加规则组' : '添
 const draft = ref(null)
 const upstreamDraft = ref(null)
 const editingUpstream = ref(false)
-const domainsOf = (text) => text.split(/[\s,]+/).filter(Boolean)
+const geoipStatus = ref({ exists: false, size: 0, updatedAt: 0 })
+const geoipBusy = ref(false)
+const geoipNote = ref('')
+const logStats = ref({ fileCount: 0, totalBytes: 0 })
+const logsBusy = ref(false)
+const logsNote = ref('')
 const targets = computed(() => [
   { id: 'system', name: '直连 · Windows 选路' },
   { id: 'wlan', name: '直连 · WLAN' },
   ...props.rules.upstreams,
   { id: 'reject', name: '拒绝连接' },
 ])
+const targetNameMap = computed(() => new Map(targets.value.map(item => [item.id, item.name])))
+const targetName = (id) => targetNameMap.value.get(id) || '未命名出口'
+const fallbackSummary = computed(() => {
+  const cn = targetName(props.rules.cnFallback || 'wlan')
+  const overseas = targetName(props.rules.fallback || 'system')
+  return cn === overseas ? `默认 ${overseas}` : `国内 ${cn.replace('直连 · ', '')} / 国外 ${overseas.replace('直连 · ', '')}`
+})
+async function loadSettingsInfo() {
+  if (!desktop) return
+  try {
+    const [geo, logs] = await Promise.all([invoke('get_geoip_status'), invoke('get_log_stats')])
+    if (geo) geoipStatus.value = geo
+    if (logs) logStats.value = logs
+  } catch {}
+}
+watch(tab, (next) => {
+  if (next === 'settings') {
+    geoipNote.value = ''
+    logsNote.value = ''
+    loadSettingsInfo()
+  }
+})
+async function refreshGeoip() {
+  if (!desktop || geoipBusy.value) return
+  geoipBusy.value = true
+  geoipNote.value = '正在下载最新数据库...'
+  try {
+    const res = await invoke('refresh_geoip_db')
+    geoipStatus.value = res
+    geoipNote.value = res.restarted ? '已更新并重载内核' : '数据库已更新'
+  } catch (err) {
+    geoipNote.value = String(err || '刷新失败')
+  } finally {
+    geoipBusy.value = false
+  }
+}
+async function clearLogsNow() {
+  if (!desktop || logsBusy.value) return
+  logsBusy.value = true
+  logsNote.value = ''
+  try {
+    const res = await invoke('clear_logs')
+    logStats.value = res
+    emit('logs-cleared')
+    logsNote.value = '日志已清空'
+  } catch (err) {
+    logsNote.value = String(err || '清理失败')
+  } finally {
+    logsBusy.value = false
+  }
+}
+function formatGeoipMeta() {
+  if (!geoipStatus.value.exists) return '未检测到数据库'
+  const sizeText = formatBytes(geoipStatus.value.size || 0)
+  if (!geoipStatus.value.updatedAt) return sizeText
+  const d = new Date(geoipStatus.value.updatedAt)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${sizeText} · ${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
 function editGroup(group = null) {
   draft.value = group ? { ...group } : { id: crypto.randomUUID(), name: '', domains: '', target: 'system' }
   editing.value = true
@@ -55,6 +123,7 @@ function removeUpstream(id) {
     if (group.target === id) group.target = 'system'
   }
   if (props.rules.fallback === id) props.rules.fallback = 'system'
+  if (props.rules.cnFallback === id) props.rules.cnFallback = 'wlan'
   props.rules.upstreams = props.rules.upstreams.filter(upstream => upstream.id !== id)
 }
 </script>
@@ -64,15 +133,18 @@ function removeUpstream(id) {
     <header class="panel-header">
       <strong class="panel-title">域名分流</strong>
       <div class="panel-header-actions">
-        <button v-if="tab !== 'traffic'" type="button" class="add-item" :aria-label="addLabel" :title="addLabel"
+        <button v-if="tab === 'rules' || tab === 'upstreams'" type="button" class="add-item" :aria-label="addLabel" :title="addLabel"
           @click="tab === 'rules' ? editGroup() : editUpstream()">
           <Plus :size="16" aria-hidden="true" />
         </button>
-      <div class="theme-toggle" role="group" aria-label="主题" :data-active="theme">
-        <button type="button" aria-label="浅色主题" title="浅色主题" :aria-pressed="theme === 'light'" @click="theme = 'light'">
+      <div class="theme-toggle" role="group" aria-label="主题" :data-active="themeMode">
+        <button type="button" aria-label="浅色主题" title="浅色主题" :aria-pressed="themeMode === 'light'" @click="themeMode = 'light'">
           <Sun :size="15" aria-hidden="true" />
         </button>
-        <button type="button" aria-label="深色主题" title="深色主题" :aria-pressed="theme === 'dark'" @click="theme = 'dark'">
+        <button type="button" aria-label="跟随系统" title="跟随系统" :aria-pressed="themeMode === 'system'" @click="themeMode = 'system'">
+          <Monitor :size="15" aria-hidden="true" />
+        </button>
+        <button type="button" aria-label="深色主题" title="深色主题" :aria-pressed="themeMode === 'dark'" @click="themeMode = 'dark'">
           <Moon :size="15" aria-hidden="true" />
         </button>
       </div>
@@ -82,12 +154,17 @@ function removeUpstream(id) {
       <div class="tabs-wrap">
         <TabsList class="tabs" :data-active="tab" aria-label="分流设置">
           <TabsTrigger value="traffic">运行详情</TabsTrigger>
+          <TabsTrigger value="history">历史统计</TabsTrigger>
           <TabsTrigger value="rules">域名规则</TabsTrigger>
           <TabsTrigger value="upstreams">上游代理</TabsTrigger>
+          <TabsTrigger value="settings">系统设置</TabsTrigger>
         </TabsList>
       </div>
       <TabsContent value="traffic">
-        <TrafficPanel :traffic="traffic" :sessions="sessions" :rules="rules" :theme="theme" />
+        <TrafficPanel :traffic="traffic" />
+      </TabsContent>
+      <TabsContent value="history">
+        <HistoryPanel :traffic="traffic" :sessions="sessions" :rules="rules" :theme="theme" />
       </TabsContent>
       <TabsContent value="rules">
         <TransitionGroup name="rule-list" tag="div" class="panel-scroll">
@@ -96,8 +173,8 @@ function removeUpstream(id) {
             <strong>{{ group.name || '未命名规则组' }}</strong>
             <small>{{ group.enabled === false ? '已停用' : domainsOf(group.domains).length + ' 个域名' }}</small>
           </div>
-          <span class="route-cell" :title="targets.find(target => target.id === group.target)?.name || '未命名出口'">
-            {{ targets.find(target => target.id === group.target)?.name || '未命名出口' }}
+          <span class="route-cell" :title="targetName(group.target)">
+            {{ targetName(group.target) }}
           </span>
           <div class="rule-actions">
             <SwitchRoot class="rule-switch" :model-value="group.enabled !== false"
@@ -129,12 +206,49 @@ function removeUpstream(id) {
         </div>
         </TransitionGroup>
       </TabsContent>
+      <TabsContent value="settings">
+        <div class="panel-scroll settings-list">
+          <div class="rule-row setting-row">
+            <div class="group-summary">
+              <strong>未匹配 · 国内出口</strong>
+              <small>GeoIP 命中中国大陆 IP</small>
+            </div>
+            <PanelSelect v-model="rules.cnFallback" :options="targets" :theme="theme" label="国内默认出口" />
+          </div>
+          <div class="rule-row setting-row">
+            <div class="group-summary">
+              <strong>未匹配 · 国外出口</strong>
+              <small>非国内 IP 或未识别归属</small>
+            </div>
+            <PanelSelect v-model="rules.fallback" :options="targets" :theme="theme" label="国外默认出口" />
+          </div>
+          <div class="rule-row setting-row">
+            <div class="group-summary">
+              <strong>GeoIP 数据库</strong>
+              <small>{{ geoipNote || formatGeoipMeta() }}</small>
+            </div>
+            <button type="button" class="setting-btn" :disabled="geoipBusy || !desktop" @click="refreshGeoip">
+              <RefreshCw :size="13" :class="{ 'is-spinning': geoipBusy }" aria-hidden="true" />
+              <span>{{ geoipBusy ? '刷新中' : '刷新数据库' }}</span>
+            </button>
+          </div>
+          <div class="rule-row setting-row">
+            <div class="group-summary">
+              <strong>运行日志</strong>
+              <small>{{ logsNote || `${logStats.fileCount} 个文件 · ${formatBytes(logStats.totalBytes)}` }}</small>
+            </div>
+            <button type="button" class="setting-btn danger" :disabled="logsBusy || !desktop || logStats.fileCount === 0" @click="clearLogsNow">
+              <Trash2 :size="13" aria-hidden="true" />
+              <span>{{ logsBusy ? '清理中' : '清理日志' }}</span>
+            </button>
+          </div>
+        </div>
+      </TabsContent>
     </TabsRoot>
     <footer class="panel-footer">
-      <div class="fallback">
-        <span>默认出口</span>
-        <PanelSelect v-model="rules.fallback" :options="targets" :theme="theme" label="默认出口" />
-      </div>
+      <button type="button" class="fallback fallback-link" :title="fallbackSummary" @click="tab = 'settings'">
+        <span>{{ fallbackSummary }}</span>
+      </button>
       <div class="footer-switches">
         <label class="footer-switch">
           <span>系统代理</span>
@@ -142,9 +256,9 @@ function removeUpstream(id) {
             <SwitchThumb class="rule-switch-thumb" />
           </SwitchRoot>
         </label>
-        <label class="footer-switch">
+        <label class="footer-switch" :class="{ 'is-busy': toggling }">
           <span>TUN</span>
-          <SwitchRoot v-model="tunEnabled" class="compact-switch" aria-label="启用 TUN">
+          <SwitchRoot v-model="tunEnabled" :disabled="toggling" class="compact-switch" aria-label="启用 TUN">
             <SwitchThumb class="rule-switch-thumb" />
           </SwitchRoot>
         </label>
@@ -162,7 +276,7 @@ function removeUpstream(id) {
         <DialogContent as-child>
           <form v-if="draft" class="editor" :data-theme="theme" @submit.prevent="saveGroup">
             <DialogTitle class="editor-title">规则组设置</DialogTitle>
-            <DialogDescription class="editor-note">填写规则名称和域名后缀，域名可用空格、逗号或换行分隔。</DialogDescription>
+            <DialogDescription class="editor-note">填写规则名称和域名规则（默认单域名精确匹配，带 * 按前缀/后缀或通配符匹配），可用空格、逗号或换行分隔。</DialogDescription>
             <label>规则名称<input v-model="draft.name" required maxlength="40" /></label>
             <label>域名规则<textarea v-model="draft.domains" required rows="4" spellcheck="false" /></label>
             <div class="editor-actions">
@@ -206,7 +320,8 @@ function removeUpstream(id) {
 .panel-header-actions .add-item:hover { background: var(--hover); }
 .theme-toggle { position: relative; display: flex; padding: 2px; border: 1px solid var(--edge); border-radius: 999px; background: var(--field); }
 .theme-toggle::before { content: ''; position: absolute; top: 2px; left: 2px; width: 29px; height: 26px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 18%, var(--surface)); transition: transform .18s ease; pointer-events: none; }
-.theme-toggle[data-active="dark"]::before { transform: translateX(29px); }
+.theme-toggle[data-active="system"]::before { transform: translateX(29px); }
+.theme-toggle[data-active="dark"]::before { transform: translateX(58px); }
 .theme-toggle button { position: relative; display: grid; place-items: center; width: 29px; height: 26px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--muted); }
 .theme-toggle button[aria-pressed="true"] { color: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .theme-toggle::before { transition: none; } }
@@ -223,7 +338,7 @@ function removeUpstream(id) {
 .group-summary { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 12px; }
 .group-summary strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .group-summary small { flex: none; color: var(--muted); white-space: nowrap; }
-.editor-overlay { position: fixed; inset: 0; z-index: 9; background: #0006; }
+.editor-overlay { position: fixed; inset: 0; z-index: 9; background: transparent; }
 .editor { position: fixed; z-index: 10; inset: 50% auto auto 50%; transform: translate(-50%, -50%); box-sizing: border-box; width: min(380px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; padding: 16px; border: 1px solid var(--edge); border-radius: 16px; background: #161f21; color: #eaf4f1;  }
 .editor[data-theme="light"] { color-scheme: light; background: #f6faf8; color: #18322b;  }
 .editor-title { margin: 0; font-size: 16px; }
@@ -247,9 +362,11 @@ button:hover { border-color: var(--accent); }
 .panel > header, .panel > footer, .panel-tabs > :first-child { flex: none; }
 .panel-title { font-size: 13px; font-weight: 500; letter-spacing: -.01em; }
 .tabs { display: flex; position: relative; gap: 0; padding: 3px; background: var(--field); border-radius: 9px; }
-.tabs::before { content: ''; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 3); background: var(--selected); border-radius: 6px; box-shadow: 0 1px 3px #0001; transition: transform .18s ease; }
-.tabs[data-active="rules"]::before { transform: translateX(100%); }
-.tabs[data-active="upstreams"]::before { transform: translateX(200%); }
+.tabs::before { content: ''; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 5); background: var(--selected); border-radius: 6px; box-shadow: 0 1px 3px #0001; transition: transform .18s ease; }
+.tabs[data-active="history"]::before { transform: translateX(100%); }
+.tabs[data-active="rules"]::before { transform: translateX(200%); }
+.tabs[data-active="upstreams"]::before { transform: translateX(300%); }
+.tabs[data-active="settings"]::before { transform: translateX(400%); }
 .tabs button { position: relative; font-size: 12px; font-weight: 500; border: 0; color: var(--muted); }
 .tabs button[aria-selected="true"] { color: var(--foreground); }
 .rule-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 34%) 52px; gap: 8px; }
@@ -265,7 +382,7 @@ button:hover { border-color: var(--accent); }
 footer { border-top: 1px solid var(--edge); padding-top: 12px; }
 .fallback { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
 .action { font-size: 11px; font-weight: 500; padding: 6px 10px; border-radius: 7px; background: #10b9811a; color: var(--accent); }
-.editor { background: var(--surface); color: var(--foreground); border-color: var(--edge); backdrop-filter: blur(24px) saturate(180%); }
+.editor { background: var(--surface); color: var(--foreground); border-color: var(--edge); backdrop-filter: blur(24px) saturate(180%); box-shadow: 0 12px 32px rgba(0, 0, 0, .28); }
 .editor input, .editor textarea { border: 0; background: var(--hover); padding: 6px 8px; transition: background-color .15s ease; }
 .editor input:hover, .editor textarea:hover { background: color-mix(in srgb, var(--foreground) 10%, transparent); }
 .editor input:focus, .editor input:focus-visible, .editor textarea:focus, .editor textarea:focus-visible { outline: none; background: color-mix(in srgb, var(--accent) 16%, var(--hover)); }
@@ -281,7 +398,16 @@ footer { border-top: 1px solid var(--edge); padding-top: 12px; }
 .footer-switch { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; white-space: nowrap; cursor: pointer; }
 .footer-switch.is-busy, .footer-switch.is-busy .compact-switch { cursor: progress; opacity: .85; }
 .panel-footer .fallback { min-width: 0; }
-.panel-footer .fallback > span { flex: none; }
+.panel-footer .fallback-link { border: 0; background: transparent; padding: 2px 4px; border-radius: 6px; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 190px; text-align: left; }
+.panel-footer .fallback-link:hover { background: var(--hover); color: var(--foreground); }
+.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.setting-row .group-summary { display: grid; gap: 2px; }
+.setting-row :deep(.picker) { width: 132px; flex: none; }
+.setting-btn { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border: 0; border-radius: 7px; background: var(--hover); color: var(--foreground); font-size: 11px; flex: none; }
+.setting-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 16%, var(--hover)); color: var(--accent); }
+.setting-btn.danger:hover:not(:disabled) { background: color-mix(in srgb, #ef4444 16%, var(--hover)); color: #ef4444; }
+.setting-btn:disabled { opacity: .45; cursor: default; }
+.is-spinning { animation: switch-spin .8s linear infinite; }
 .panel-footer :deep(.picker) { box-sizing: border-box; width: 96px; }
 .panel-footer :deep(.picker > span:first-child) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .panel-footer :deep(.picker svg) { flex: none; }

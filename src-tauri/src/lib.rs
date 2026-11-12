@@ -1,11 +1,19 @@
 pub mod config;
+pub mod logger;
 pub mod models;
 pub mod proxy;
 pub mod sysproxy;
 pub mod tray;
 pub mod window;
 
-use proxy::{load_rules, save_rules, start_proxy, stop_proxy, stop_proxy_internal, ProxyManager};
+use logger::{
+    append_connection_logs, append_session_log, clear_logs, get_log_stats, load_session_logs,
+};
+
+use proxy::{
+    get_geoip_status, load_rules, refresh_geoip_db, save_rules, start_proxy, stop_proxy,
+    stop_proxy_internal, ProxyManager,
+};
 use tauri::{Emitter, Manager, PhysicalPosition, WindowEvent};
 use std::{thread, time::Duration};
 use window::{
@@ -14,19 +22,27 @@ use window::{
 };
 
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    if std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_none() {
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--no-proxy-server");
+    }
     proxy::init_from_args();
+    if !proxy::acquire_single_instance_lock() {
+        return;
+    }
     tauri::Builder::default()
         .manage(IslandPosition::default())
         .manage(ProxyManager::default())
         .setup(|app| {
             tray::create_tray(app.handle())?;
+            proxy::spawn_wake_listener(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
                 if let Some(monitor) = window.primary_monitor()? {
                     let width = window.outer_size()?.width;
                     let x = monitor.position().x
                         + monitor.size().width.saturating_sub(width) as i32 / 2;
                     let y =
-                        monitor.position().y + (16.0 * monitor.scale_factor()).round() as i32;
+                        monitor.position().y + (2.0 * monitor.scale_factor()).round() as i32;
                     window.set_position(PhysicalPosition::new(x, y))?;
                 }
             }
@@ -96,6 +112,13 @@ pub fn run() {
             save_rules,
             start_proxy,
             stop_proxy,
+            get_geoip_status,
+            refresh_geoip_db,
+            append_connection_logs,
+            append_session_log,
+            load_session_logs,
+            get_log_stats,
+            clear_logs,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Split Proxy Island");

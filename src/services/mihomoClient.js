@@ -1,3 +1,4 @@
+import { watch } from 'vue'
 import { buildRouteLookup, parseMihomoLogPayload } from './routeMatcher'
 
 const DEFAULT_CONTROLLER = {
@@ -11,6 +12,7 @@ export function subscribeMihomoTraffic({
   rules,
   controller = DEFAULT_CONTROLLER,
   onDisconnect,
+  onLogsBatch,
 }) {
   const {
     host = DEFAULT_CONTROLLER.host,
@@ -33,7 +35,29 @@ export function subscribeMihomoTraffic({
   let rawPrevDownloadTotal = 0
   let prevConnBytes = new Map()
   let lastRoute = null
+  let nextLogId = 1
+  let pendingLogBatch = []
+  let logFlushTimer = null
   let latestWsRate = { up: 0, down: 0 }
+
+  function flushLogBatch() {
+    if (logFlushTimer) {
+      clearTimeout(logFlushTimer)
+      logFlushTimer = null
+    }
+    if (!pendingLogBatch.length) return
+    const batch = pendingLogBatch
+    pendingLogBatch = []
+    onLogsBatch?.(batch)
+  }
+  let cachedLookup = buildRouteLookup(rules)
+  const stopRulesWatch = watch(
+    () => rules,
+    () => {
+      cachedLookup = buildRouteLookup(rules)
+    },
+    { deep: true },
+  )
 
   function ensureBuckets(lookup, sampleByExit, sampleByRule) {
     const t = trafficRef.value
@@ -67,7 +91,7 @@ export function subscribeMihomoTraffic({
 
   function handleConnectionsSnapshot(parsed) {
     const t = trafficRef.value
-    const lookup = buildRouteLookup(rules)
+    const lookup = cachedLookup
     const sampleByExit = {}
     const sampleByRule = {}
     ensureBuckets(lookup, sampleByExit, sampleByRule)
@@ -111,7 +135,7 @@ export function subscribeMihomoTraffic({
       const payloadStr = conn.rule === 'Match'
         ? ''
         : (conn.rulePayload || sniffHost || metaHost)
-      const { ruleId, ruleName, exitId, exitName } = lookup.resolve(payloadStr, outboundHint)
+      const { ruleId, ruleName, exitId, exitName } = lookup.resolve(payloadStr, outboundHint, conn.rule)
 
       if (firstSeed) {
         t.upload += du
@@ -187,8 +211,7 @@ export function subscribeMihomoTraffic({
         try {
           const item = JSON.parse(event.data)
           if (!item?.payload) return
-          const lookup = buildRouteLookup(rules)
-          const entry = parseMihomoLogPayload(item.payload, lookup)
+          const entry = parseMihomoLogPayload(item.payload, cachedLookup)
           if (!entry) return
           if (!entry.failed) {
             lastRoute = {
@@ -198,14 +221,31 @@ export function subscribeMihomoTraffic({
               exitName: entry.exit,
             }
           }
-          trafficRef.value.logs.push({
+          const logItem = {
+            id: nextLogId++,
             timestamp: entry.timestamp,
             host: entry.host,
             rule: entry.rule,
             exit: entry.exit,
             failed: entry.failed,
             reason: entry.reason,
-          })
+          }
+          trafficRef.value.logs.push(logItem)
+          if (onLogsBatch) {
+            pendingLogBatch.push({
+              timestamp: logItem.timestamp,
+              host: logItem.host,
+              rule: logItem.rule,
+              exit: logItem.exit,
+              failed: logItem.failed,
+              reason: logItem.reason,
+            })
+            if (pendingLogBatch.length >= 20) {
+              flushLogBatch()
+            } else if (!logFlushTimer) {
+              logFlushTimer = setTimeout(flushLogBatch, 1500)
+            }
+          }
           if (trafficRef.value.logs.length > 120) {
             trafficRef.value.logs.splice(0, trafficRef.value.logs.length - 120)
           }
@@ -285,6 +325,8 @@ export function subscribeMihomoTraffic({
 
   return () => {
     stopped = true
+    flushLogBatch()
+    stopRulesWatch()
     for (const timer of reconnectTimers) clearTimeout(timer)
     reconnectTimers = []
     for (const ws of [logsWs, trafficWs, connsWs]) {

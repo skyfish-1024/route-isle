@@ -13,8 +13,8 @@
       {
         "label": "main",
         "title": "Split Proxy Island",
-        "width": 220,
-        "height": 48,
+        "width": 260,
+        "height": 76,
         "skipTaskbar": true,
         "decorations": false,
         "shadow": false,
@@ -45,7 +45,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../ApexCore.exe": "ApexCore.exe"
+      "../ApexCore.exe": "ApexCore.exe",
+      "../Country.mmdb": "Country.mmdb"
     }
   }
 }

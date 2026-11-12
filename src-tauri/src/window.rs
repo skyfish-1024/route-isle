@@ -45,7 +45,7 @@ pub struct WindowStateInner {
 impl Default for WindowStateInner {
     fn default() -> Self {
         Self {
-            capsule_insets: [12.0, 9.0, 12.0, 9.0],
+            capsule_insets: [20.0, 23.0, 20.0, 23.0],
             panel_visible: false,
             pop_up: false,
             capsule_state: CapsuleState::default(),

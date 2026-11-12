@@ -3,17 +3,283 @@ use crate::models::{
 };
 use serde_json::{json, Map, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
-    process::Command,
+    path::Path,
+    thread,
     time::Duration,
 };
 
 #[cfg(target_os = "windows")]
-use crate::models::CREATE_NO_WINDOW;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+mod win_net {
+    use super::*;
+
+    const AF_INET: u32 = 2;
+    const AF_INET6: u32 = 23;
+    const TCP_TABLE_OWNER_PID_LISTENER: u32 = 3;
+    const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct MibTcpRowOwnerPid {
+        dw_state: u32,
+        dw_local_addr: u32,
+        dw_local_port: u32,
+        dw_remote_addr: u32,
+        dw_remote_port: u32,
+        dw_owning_pid: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct MibTcp6RowOwnerPid {
+        uc_local_addr: [u8; 16],
+        dw_local_scope_id: u32,
+        dw_local_port: u32,
+        uc_remote_addr: [u8; 16],
+        dw_remote_scope_id: u32,
+        dw_remote_port: u32,
+        dw_state: u32,
+        dw_owning_pid: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct MibIpForwardRow {
+        dw_forward_dest: u32,
+        dw_forward_mask: u32,
+        dw_forward_policy: u32,
+        dw_forward_next_hop: u32,
+        dw_forward_if_index: u32,
+        dw_forward_type: u32,
+        dw_forward_proto: u32,
+        dw_forward_age: u32,
+        dw_forward_next_hop_as: u32,
+        dw_forward_metric1: u32,
+        dw_forward_metric2: u32,
+        dw_forward_metric3: u32,
+        dw_forward_metric4: u32,
+        dw_forward_metric5: u32,
+    }
+
+    #[link(name = "iphlpapi")]
+    unsafe extern "system" {
+        fn GetExtendedTcpTable(
+            p_tcp_table: *mut u8,
+            pdw_size: *mut u32,
+            b_order: i32,
+            ul_af: u32,
+            table_class: u32,
+            reserved: u32,
+        ) -> u32;
+        fn GetIpForwardTable(p_ip_forward_table: *mut u8, pdw_size: *mut u32, b_order: i32)
+            -> u32;
+        fn ConvertInterfaceIndexToLuid(interface_index: u32, interface_luid: *mut u64) -> u32;
+        fn ConvertInterfaceLuidToAlias(
+            interface_luid: *const u64,
+            interface_alias: *mut u16,
+            length: usize,
+        ) -> u32;
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> isize;
+        fn QueryFullProcessImageNameW(
+            h_process: isize,
+            dw_flags: u32,
+            lp_exe_name: *mut u16,
+            lpdw_size: *mut u32,
+        ) -> i32;
+        fn CloseHandle(h_object: isize) -> i32;
+    }
+
+    fn process_exe_name(pid: u32) -> Option<String> {
+        if pid == 0 {
+            return None;
+        }
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle == 0 {
+                return None;
+            }
+            let mut buf = [0u16; 512];
+            let mut len = buf.len() as u32;
+            let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len);
+            let _ = CloseHandle(handle);
+            if ok == 0 || len == 0 {
+                return None;
+            }
+            let full = String::from_utf16_lossy(&buf[..len as usize]);
+            Path::new(&full)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        }
+    }
+
+    fn collect_pids_for_af(af: u32, target_ports: &HashSet<u16>, pids: &mut HashSet<u32>) {
+        let mut size: u32 = 0;
+        unsafe {
+            let res = GetExtendedTcpTable(
+                std::ptr::null_mut(),
+                &mut size,
+                0,
+                af,
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
+            );
+            if res != ERROR_INSUFFICIENT_BUFFER || size < 4 {
+                return;
+            }
+            let mut buf = vec![0u8; size as usize];
+            if GetExtendedTcpTable(
+                buf.as_mut_ptr(),
+                &mut size,
+                0,
+                af,
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
+            ) != 0
+            {
+                return;
+            }
+            let count = u32::from_ne_bytes(buf[0..4].try_into().unwrap_or([0; 4])) as usize;
+            let data = &buf[4..];
+            if af == AF_INET {
+                let row_size = std::mem::size_of::<MibTcpRowOwnerPid>();
+                for i in 0..count {
+                    if (i + 1) * row_size > data.len() {
+                        break;
+                    }
+                    let row = std::ptr::read_unaligned(
+                        data.as_ptr().add(i * row_size) as *const MibTcpRowOwnerPid
+                    );
+                    let port = u16::from_be((row.dw_local_port & 0xFFFF) as u16);
+                    if target_ports.contains(&port) {
+                        pids.insert(row.dw_owning_pid);
+                    }
+                }
+            } else if af == AF_INET6 {
+                let row_size = std::mem::size_of::<MibTcp6RowOwnerPid>();
+                for i in 0..count {
+                    if (i + 1) * row_size > data.len() {
+                        break;
+                    }
+                    let row = std::ptr::read_unaligned(
+                        data.as_ptr().add(i * row_size) as *const MibTcp6RowOwnerPid
+                    );
+                    let port = u16::from_be((row.dw_local_port & 0xFFFF) as u16);
+                    if target_ports.contains(&port) {
+                        pids.insert(row.dw_owning_pid);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn find_local_port_process_names(ports: &[u16]) -> Vec<String> {
+        if ports.is_empty() {
+            return Vec::new();
+        }
+        let target_ports: HashSet<u16> = ports.iter().copied().collect();
+        let mut pids = HashSet::new();
+        collect_pids_for_af(AF_INET, &target_ports, &mut pids);
+        collect_pids_for_af(AF_INET6, &target_ports, &mut pids);
+
+        let mut names = Vec::new();
+        let mut seen_lower = HashSet::new();
+        for pid in pids {
+            if let Some(exe) = process_exe_name(pid) {
+                let lower = exe.to_ascii_lowercase();
+                if seen_lower.insert(lower) {
+                    names.push(exe);
+                }
+            }
+        }
+        names
+    }
+
+    fn is_virtual_adapter_name(name: &str) -> bool {
+        let lower = name.to_ascii_lowercase();
+        [
+            "routeisle",
+            "wintun",
+            "tailscale",
+            "clash",
+            "mihomo",
+            "vethernet",
+            "loopback",
+            "vmware",
+            "virtualbox",
+            "tap-",
+            "zerotier",
+            "hyper-v",
+            "wsl",
+            "wireguard",
+        ]
+        .iter()
+        .any(|kw| lower.contains(kw))
+    }
+
+    pub fn detect_physical_interface() -> String {
+        let mut size: u32 = 0;
+        unsafe {
+            let res = GetIpForwardTable(std::ptr::null_mut(), &mut size, 1);
+            if res != ERROR_INSUFFICIENT_BUFFER || size < 4 {
+                return "WLAN".into();
+            }
+            let mut buf = vec![0u8; size as usize];
+            if GetIpForwardTable(buf.as_mut_ptr(), &mut size, 1) != 0 {
+                return "WLAN".into();
+            }
+            let count = u32::from_ne_bytes(buf[0..4].try_into().unwrap_or([0; 4])) as usize;
+            let data = &buf[4..];
+            let row_size = std::mem::size_of::<MibIpForwardRow>();
+            let mut candidates: Vec<(u32, u32)> = Vec::new();
+            for i in 0..count {
+                if (i + 1) * row_size > data.len() {
+                    break;
+                }
+                let row = std::ptr::read_unaligned(
+                    data.as_ptr().add(i * row_size) as *const MibIpForwardRow
+                );
+                if row.dw_forward_dest == 0 && row.dw_forward_mask == 0 {
+                    candidates.push((row.dw_forward_metric1, row.dw_forward_if_index));
+                }
+            }
+            candidates.sort_by_key(|(metric, _)| *metric);
+            for (_, if_index) in candidates {
+                let mut luid: u64 = 0;
+                if ConvertInterfaceIndexToLuid(if_index, &mut luid) != 0 {
+                    continue;
+                }
+                let mut alias = [0u16; 257];
+                if ConvertInterfaceLuidToAlias(&luid, alias.as_mut_ptr(), alias.len()) != 0 {
+                    continue;
+                }
+                let end = alias.iter().position(|&c| c == 0).unwrap_or(alias.len());
+                let name = String::from_utf16_lossy(&alias[..end]).trim().to_string();
+                if !name.is_empty() && !is_virtual_adapter_name(&name) {
+                    return name;
+                }
+            }
+        }
+        "WLAN".into()
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod win_net {
+    pub fn find_local_port_process_names(_ports: &[u16]) -> Vec<String> {
+        Vec::new()
+    }
+    pub fn detect_physical_interface() -> String {
+        "WLAN".into()
+    }
+}
 
 pub fn outbound_name_for_upstream(id: &str) -> String {
     format!("upstream_{id}")
@@ -59,49 +325,19 @@ pub fn is_tcp_reachable(host: &str, port: u16, timeout_ms: u64) -> bool {
 }
 
 fn find_local_port_process_names(ports: &[u16]) -> Vec<String> {
-    if ports.is_empty() {
-        return Vec::new();
-    }
-    let port_list = ports
-        .iter()
-        .map(u16::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    let script = format!(
-        "Get-NetTCPConnection -LocalPort @({port_list}) -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName }} | Sort-Object -Unique"
-    );
-    let mut cmd = Command::new("powershell.exe");
-    cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script]);
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    let mut names = Vec::new();
-    if let Ok(out) = cmd.output() {
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                let exe = if trimmed.to_lowercase().ends_with(".exe") {
-                    trimmed.to_string()
-                } else {
-                    format!("{trimmed}.exe")
-                };
-                if !names.contains(&exe) {
-                    names.push(exe);
-                }
-            }
-        }
-    }
-    names
+    win_net::find_local_port_process_names(ports)
 }
 
 pub fn build_mihomo_config(payload: &RulesPayload) -> Result<Value, String> {
+    let physical_iface = win_net::detect_physical_interface();
     let mut proxies = vec![json!({
         "name": "PhysicalDirect",
         "type": "direct",
-        "interface-name": "WLAN"
+        "interface-name": physical_iface
     })];
 
-    let mut reachable_doh_outbound: Option<String> = None;
     let mut local_upstream_ports = Vec::new();
+    let mut probe_targets: Vec<(String, String, u16, bool)> = Vec::new();
 
     for upstream in &payload.upstreams {
         let (host, port) = parse_host_port(&upstream.address)?;
@@ -119,17 +355,30 @@ pub fn build_mihomo_config(payload: &RulesPayload) -> Result<Value, String> {
             "server": host,
             "port": port
         }));
-        if reachable_doh_outbound.is_none() && is_tcp_reachable(&host, port, 250) {
-            reachable_doh_outbound = Some(outbound_name);
-        }
+        let is_fallback = upstream.id == payload.fallback;
+        probe_targets.push((outbound_name, host, port, is_fallback));
     }
 
-    if payload.fallback != "system" && payload.fallback != "wlan" && payload.fallback != "reject" {
-        if let Some(u) = payload.upstreams.iter().find(|u| u.id == payload.fallback) {
-            if let Ok((host, port)) = parse_host_port(&u.address) {
-                if is_tcp_reachable(&host, port, 250) {
-                    reachable_doh_outbound = Some(outbound_name_for_upstream(&u.id));
-                }
+    let reachability: Vec<bool> = thread::scope(|s| {
+        let handles: Vec<_> = probe_targets
+            .iter()
+            .map(|(_, host, port, _)| s.spawn(|| is_tcp_reachable(host, *port, 250)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or(false))
+            .collect()
+    });
+
+    let mut reachable_doh_outbound: Option<String> = None;
+    for ((outbound_name, _, _, is_fallback), ok) in probe_targets.iter().zip(reachability.iter()) {
+        if *ok {
+            if *is_fallback {
+                reachable_doh_outbound = Some(outbound_name.clone());
+                break;
+            }
+            if reachable_doh_outbound.is_none() {
+                reachable_doh_outbound = Some(outbound_name.clone());
             }
         }
     }
@@ -149,15 +398,34 @@ pub fn build_mihomo_config(payload: &RulesPayload) -> Result<Value, String> {
                 continue;
             }
             seen_domains.insert(domain.clone(), true);
+            let (rule_line, dns_key) = if let Some(suffix) = domain.strip_prefix("*.") {
+                if !suffix.is_empty() && !suffix.contains('*') && !suffix.contains('?') {
+                    (
+                        format!("DOMAIN-SUFFIX,{suffix},{outbound}"),
+                        format!("+.{suffix}"),
+                    )
+                } else {
+                    (
+                        format!("DOMAIN-WILDCARD,{domain},{outbound}"),
+                        domain.clone(),
+                    )
+                }
+            } else if domain.contains('*') || domain.contains('?') {
+                (
+                    format!("DOMAIN-WILDCARD,{domain},{outbound}"),
+                    domain.clone(),
+                )
+            } else {
+                (format!("DOMAIN,{domain},{outbound}"), domain.clone())
+            };
             if group.target != "reject" {
                 if let Some(ref doh_out) = reachable_doh_outbound {
                     dns_policy.insert(
-                        format!("+.{domain}"),
+                        dns_key,
                         json!([format!("https://dns.google/dns-query#{doh_out}")]),
                     );
                 }
             }
-            let rule_line = format!("DOMAIN-SUFFIX,{domain},{outbound}");
             domain_entries.push((domain, rule_line));
         }
     }
@@ -169,11 +437,29 @@ pub fn build_mihomo_config(payload: &RulesPayload) -> Result<Value, String> {
         for proc_name in find_local_port_process_names(&local_upstream_ports) {
             rules.push(format!("PROCESS-NAME,{proc_name},PhysicalDirect"));
         }
+        for cidr in [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "127.0.0.0/8",
+            "169.254.0.0/16",
+            "224.0.0.0/4",
+            "223.5.5.5/32",
+            "119.29.29.29/32",
+            "fc00::/7",
+            "fe80::/10",
+        ] {
+            rules.push(format!("IP-CIDR,{cidr},DIRECT,no-resolve"));
+        }
     }
     rules.extend(domain_entries.into_iter().map(|(_, line)| line));
 
-    let fallback_outbound = target_to_outbound(&payload.fallback, &payload.upstreams);
-    rules.push(format!("MATCH,{fallback_outbound}"));
+    let cn_outbound = target_to_outbound(&payload.cn_fallback, &payload.upstreams);
+    let overseas_outbound = target_to_outbound(&payload.fallback, &payload.upstreams);
+    if cn_outbound != overseas_outbound {
+        rules.push(format!("GEOIP,CN,{cn_outbound}"));
+    }
+    rules.push(format!("MATCH,{overseas_outbound}"));
 
     let dns_config = if payload.tun_enabled {
         let mut nameservers = Vec::new();
@@ -223,10 +509,11 @@ pub fn build_mihomo_config(payload: &RulesPayload) -> Result<Value, String> {
             "enable": payload.tun_enabled,
             "force-dns-mapping": true,
             "parse-pure-ip": true,
-            "override-destination": false,
+            "override-destination": true,
             "sniff": {
                 "HTTP": { "ports": [80, "8080-8880"], "override-destination": true },
-                "TLS": { "ports": [443, 8443] }
+                "TLS": { "ports": [443, 8443] },
+                "QUIC": { "ports": [443] }
             }
         },
         "dns": dns_config,
@@ -260,6 +547,15 @@ pub fn controller_request(method: &str, path: &str, body: Option<&str>) -> Resul
     let mut raw_bytes = Vec::new();
     stream.read_to_end(&mut raw_bytes).map_err(|e| e.to_string())?;
     let response = String::from_utf8_lossy(&raw_bytes);
-    let (_, resp_body) = response.split_once("\r\n\r\n").ok_or("Invalid HTTP response")?;
+    let (head, resp_body) = response.split_once("\r\n\r\n").ok_or("Invalid HTTP response")?;
+    let status_code = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or(0);
+    if !(200..300).contains(&status_code) {
+        return Err(format!("Controller HTTP {status_code}: {resp_body}"));
+    }
     Ok(resp_body.to_string())
 }

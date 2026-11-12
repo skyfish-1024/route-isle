@@ -10,6 +10,8 @@ export function createTraffic() {
   }
 }
 
+let nextSimLogId = 1
+
 export function simulateTraffic(traffic, rules) {
   const routes = rules.groups
     .filter(group => group.enabled !== false)
@@ -59,6 +61,7 @@ export function simulateTraffic(traffic, rules) {
     traffic.downloadRate += download
   }
   traffic.logs.push({
+    id: nextSimLogId++,
     timestamp,
     host: loggedRoute.domains[Math.floor(Math.random() * loggedRoute.domains.length)] || 'example.invalid',
     rule: loggedRoute.name || '未命名规则组',

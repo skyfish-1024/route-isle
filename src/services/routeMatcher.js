@@ -8,6 +8,29 @@ export function exitNameFor(target, upstreams = []) {
   return upstream ? (upstream.name?.trim() || '未命名上游') : '未命名出口'
 }
 
+function compilePattern(pattern) {
+  if (pattern.startsWith('*.')) {
+    const suffix = pattern.slice(2)
+    if (suffix && !suffix.includes('*') && !suffix.includes('?')) {
+      return { kind: 'suffix', value: suffix }
+    }
+  }
+  if (pattern.includes('*') || pattern.includes('?')) {
+    const escaped = pattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*/g, '.*')
+      .replace(/\?/g, '.')
+    return { kind: 'wildcard', regex: new RegExp(`^${escaped}$`) }
+  }
+  return { kind: 'exact', value: pattern }
+}
+
+function matchesRule(clean, matcher) {
+  if (matcher.kind === 'exact') return clean === matcher.value
+  if (matcher.kind === 'suffix') return clean === matcher.value || clean.endsWith(`.${matcher.value}`)
+  return matcher.regex.test(clean)
+}
+
 export function buildRouteLookup(rules) {
   const outboundToExit = new Map([
     ['DIRECT', { exitId: 'system', exitName: 'Windows 选路' }],
@@ -34,11 +57,12 @@ export function buildRouteLookup(rules) {
     activeExits.set(group.target, exitName)
 
     for (const raw of domainsOf(group.domains)) {
-      const suffix = raw.replace(/^\.+/, '').toLowerCase()
-      if (!suffix || seen.has(suffix)) continue
-      seen.add(suffix)
+      const pattern = raw.replace(/^\.+/, '').toLowerCase()
+      if (!pattern || seen.has(pattern)) continue
+      seen.add(pattern)
       domains.push({
-        suffix,
+        pattern,
+        matcher: compilePattern(pattern),
         ruleId: group.id,
         ruleName,
         exitId: group.target,
@@ -47,25 +71,43 @@ export function buildRouteLookup(rules) {
     }
   }
 
-  domains.sort((a, b) => b.suffix.length - a.suffix.length)
+  domains.sort((a, b) => b.pattern.length - a.pattern.length)
 
+  const cnFallbackExitId = rules.cnFallback || 'wlan'
   const fallbackExitId = rules.fallback || 'system'
   const fallbackExitName = exitNameFor(fallbackExitId, rules.upstreams)
+  if (cnFallbackExitId !== fallbackExitId) {
+    activeRules.push(['geoip-cn', 'GeoIP 国内直连'])
+    activeExits.set(cnFallbackExitId, exitNameFor(cnFallbackExitId, rules.upstreams))
+  }
   activeRules.push(['unmatched', '未匹配'])
   activeExits.set(fallbackExitId, fallbackExitName)
 
-  function resolve(hostOrPayload = '', outboundHint = '') {
-    const clean = String(hostOrPayload)
-      .trim()
-      .replace(/^DomainSuffix\(/, '')
-      .replace(/^DomainSuffix\//, '')
+  function resolve(hostOrPayload = '', outboundHint = '', ruleType = '') {
+    const rawStr = String(hostOrPayload).trim()
+    if (ruleType === 'GeoIP' || /^GeoIP[(/]/.test(rawStr)) {
+      const exit = (outboundHint && outboundToExit.get(outboundHint)) || {
+        exitId: cnFallbackExitId,
+        exitName: exitNameFor(cnFallbackExitId, rules.upstreams),
+      }
+      return {
+        ruleId: 'geoip-cn',
+        ruleName: 'GeoIP 国内直连',
+        exitId: exit.exitId,
+        exitName: exit.exitName,
+      }
+    }
+
+    const clean = rawStr
+      .replace(/^(DomainSuffix|DomainWildcard|Domain)\(/, '')
+      .replace(/^(DomainSuffix|DomainWildcard|Domain)\//, '')
       .replace(/\)$/, '')
       .split(':')[0]
       .toLowerCase()
 
     if (clean) {
       for (const meta of domains) {
-        if (clean === meta.suffix || clean.endsWith(`.${meta.suffix}`)) {
+        if (matchesRule(clean, meta.matcher)) {
           return {
             ruleId: meta.ruleId,
             ruleName: meta.ruleName,
