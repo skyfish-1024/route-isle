@@ -19,15 +19,9 @@
 
 ## 工作原理一览
 
-```mermaid
-flowchart LR
-    A["本机应用流量<br/>(浏览器 / Git / SSH / 终端)"] --> B["分流岛 RouteIsle<br/>(系统代理 17890 + TUN 接管)"]
-    B --> C{"按规则组顺序匹配<br/>(最前的最先匹配)"}
-    C -->|"内网域名 / 10.x 网段 / port:22"| D["内置 WireGuard 隧道"]
-    C -->|"国内视频 / 直连站点"| E["指定物理网卡直出 (WLAN)"]
-    C -->|"本机 / 局域网"| F["Windows 系统选路 (DIRECT)"]
-    C -->|"其余流量 (GeoIP / 兜底)"| G["HTTP / SOCKS5 上游代理"]
-```
+<p align="center">
+  <img src="docs/screenshots/workflow.svg" alt="分流岛工作原理图" />
+</p>
 
 ---
 

@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 286" width="860" height="286" role="img" aria-label="分流岛 RouteIsle 工作原理图">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#34d399" />
+    </marker>
+    <marker id="arrow-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#71717a" />
+    </marker>
+    <style>
+      .bg { fill: #14171a; stroke: #272c33; stroke-width: 1; }
+      .card { fill: #1d2228; stroke: #2f3640; stroke-width: 1.2; }
+      .card-accent { fill: #152822; stroke: #10b981; stroke-width: 1.4; }
+      .title { fill: #f4f4f5; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 13px; font-weight: 600; }
+      .sub { fill: #9ca3af; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 11px; }
+      .tag { fill: #34d399; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 11px; font-weight: 500; }
+      .line { fill: none; stroke: #71717a; stroke-width: 1.6; marker-end: url(#arrow-muted); }
+      .line-accent { fill: none; stroke: #34d399; stroke-width: 1.8; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" x="1" y="1" width="858" height="284" rx="16" />
+
+  <!-- Node 1: App Traffic -->
+  <rect class="card" x="26" y="103" width="154" height="80" rx="12" />
+  <text class="title" x="103" y="135" text-anchor="middle">本机应用流量</text>
+  <text class="sub" x="103" y="156" text-anchor="middle">浏览器 / Git / SSH / 终端</text>
+
+  <!-- Arrow 1 -> 2 -->
+  <path class="line" d="M 180 143 L 218 143" />
+
+  <!-- Node 2: RouteIsle -->
+  <rect class="card-accent" x="222" y="95" width="166" height="96" rx="12" />
+  <text class="title" x="305" y="128" text-anchor="middle">分流岛 RouteIsle</text>
+  <text class="tag" x="305" y="149" text-anchor="middle">系统代理 17890 + TUN</text>
+  <text class="sub" x="305" y="170" text-anchor="middle">按规则组从上到下优先匹配</text>
+
+  <!-- Branches to 4 outputs -->
+  <path class="line-accent" d="M 388 122 C 440 122, 460 44, 526 44" />
+  <text class="tag" x="456" y="36" text-anchor="middle">内网域名 / 10.x / port:22</text>
+
+  <path class="line" d="M 388 136 C 442 136, 462 110, 526 110" />
+  <text class="sub" x="456" y="102" text-anchor="middle">国内视频 / 直连站点</text>
+
+  <path class="line" d="M 388 150 C 442 150, 462 176, 526 176" />
+  <text class="sub" x="456" y="168" text-anchor="middle">本机 / 局域网地址</text>
+
+  <path class="line" d="M 388 164 C 440 164, 460 242, 526 242" />
+  <text class="sub" x="456" y="234" text-anchor="middle">GeoIP / 未匹配兜底</text>
+
+  <!-- Output 1: WireGuard -->
+  <rect class="card-accent" x="530" y="20" width="300" height="48" rx="10" />
+  <text class="title" x="548" y="41">内置 WireGuard 隧道</text>
+  <text class="sub" x="548" y="58">导入 .conf · 自动接管内网 AllowedIPs</text>
+
+  <!-- Output 2: Physical NIC -->
+  <rect class="card" x="530" y="86" width="300" height="48" rx="10" />
+  <text class="title" x="548" y="107">指定物理网卡直出 (WLAN)</text>
+  <text class="sub" x="548" y="124">流媒体 / 大文件不绕行代理，低延迟满速</text>
+
+  <!-- Output 3: System Route -->
+  <rect class="card" x="530" y="152" width="300" height="48" rx="10" />
+  <text class="title" x="548" y="173">Windows 系统选路 (DIRECT)</text>
+  <text class="sub" x="548" y="190">交由系统路由表直连本地与局域网服务</text>
+
+  <!-- Output 4: Upstream Proxy -->
+  <rect class="card" x="530" y="218" width="300" height="48" rx="10" />
+  <text class="title" x="548" y="239">HTTP / SOCKS5 上游代理</text>
+  <text class="sub" x="548" y="256">转发外部流量并配合 DoH 安全解析</text>
+</svg>
