@@ -146,7 +146,7 @@ const sampleTimeFormat = new Intl.DateTimeFormat('zh-CN', {
 .trend-guide { stroke: var(--muted); stroke-dasharray: 2 2; }
 .trend-tooltip { --tooltip-half: min(140px, 50%); position: absolute; z-index: 2; bottom: 100%; left: clamp(var(--tooltip-half), var(--sample-position), calc(100% - var(--tooltip-half))); transform: translateX(-50%); box-sizing: border-box; width: min(280px, 100%); border: 1px solid var(--edge); border-radius: 8px; background: var(--surface); backdrop-filter: blur(18px); box-shadow: 0 4px 14px #0002; font-size: 11px; font-variant-numeric: tabular-nums; }
 .sample-time { padding: 6px 8px; color: var(--muted); border-bottom: 1px solid var(--edge); white-space: nowrap; }
-.sample-scroll { max-height: 104px; overflow-y: auto; scrollbar-width: thin; padding: 2px 8px; }
+.sample-scroll { max-height: 104px; overflow-y: auto; padding: 2px 8px; }
 .trend-tooltip i { font-style: normal; }
 .sample-detail { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; }
 .sample-detail + .sample-detail { border-top: 1px solid var(--edge); }

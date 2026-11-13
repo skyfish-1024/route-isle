@@ -781,6 +781,20 @@ pub async fn get_geoip_status(app: AppHandle) -> Result<GeoIpStatus, String> {
         .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+pub async fn list_network_interfaces() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(crate::config::list_network_interfaces)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn scan_system_upstreams() -> Result<crate::config::SystemUpstreamScan, String> {
+    tauri::async_runtime::spawn_blocking(crate::config::scan_system_upstreams)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 fn download_geoip_with_curl(tmp_path: &std::path::Path, proxy_url: Option<&str>) -> Result<(), String> {
     const GEOIP_URL: &str =
         "https://github.com/Loyalsoldier/geoip/releases/latest/download/Country-only-cn-private.mmdb";

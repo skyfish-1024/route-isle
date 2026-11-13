@@ -56,9 +56,16 @@ export function buildRouteLookup(rules) {
     const exitName = exitNameFor(group.target, rules.upstreams)
     activeExits.set(group.target, exitName)
 
+const isNonDomainRule = (pattern) =>
+  pattern.startsWith('proc:') ||
+  pattern.startsWith('process:') ||
+  pattern.startsWith('port:') ||
+  /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(pattern) ||
+  (pattern.includes(':') && /^[0-9a-f:]+(\/\d{1,3})?$/i.test(pattern))
+
     for (const raw of domainsOf(group.domains)) {
       const pattern = raw.replace(/^\.+/, '').toLowerCase()
-      if (!pattern || seen.has(pattern)) continue
+      if (!pattern || seen.has(pattern) || isNonDomainRule(pattern)) continue
       seen.add(pattern)
       domains.push({
         pattern,
@@ -70,8 +77,6 @@ export function buildRouteLookup(rules) {
       })
     }
   }
-
-  domains.sort((a, b) => b.pattern.length - a.pattern.length)
 
   const cnFallbackExitId = rules.cnFallback || 'wlan'
   const fallbackExitId = rules.fallback || 'system'

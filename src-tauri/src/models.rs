@@ -29,11 +29,15 @@ fn default_enabled() -> bool {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Upstream {
     pub id: String,
     pub name: String,
     pub protocol: String,
+    #[serde(default)]
     pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wireguard_conf: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,6 +65,14 @@ fn default_bypass_domains() -> String {
     "localhost\n*.localhost\nlocalhost.*\nlocalhost.v.qq.com\nlocalhost.weixin.qq.com\n*.local\n*.lan".into()
 }
 
+fn default_cn_dns() -> String {
+    "223.5.5.5\n119.29.29.29".into()
+}
+
+fn default_overseas_dns() -> String {
+    "https://dns.google/dns-query".into()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RulesPayload {
@@ -71,6 +83,10 @@ pub struct RulesPayload {
     pub cn_fallback: String,
     #[serde(default = "default_bypass_domains")]
     pub bypass_domains: String,
+    #[serde(default = "default_cn_dns")]
+    pub cn_dns: String,
+    #[serde(default = "default_overseas_dns")]
+    pub overseas_dns: String,
     #[serde(default = "default_enabled")]
     pub system_proxy_enabled: bool,
     #[serde(default)]
@@ -114,10 +130,13 @@ impl Default for RulesPayload {
                 name: "飞鸟".into(),
                 protocol: "http".into(),
                 address: "127.0.0.1:7890".into(),
+                wireguard_conf: None,
             }],
             fallback: "flyingbird".into(),
             cn_fallback: "wlan".into(),
             bypass_domains: default_bypass_domains(),
+            cn_dns: default_cn_dns(),
+            overseas_dns: default_overseas_dns(),
             system_proxy_enabled: true,
             tun_enabled: false,
             running: false,

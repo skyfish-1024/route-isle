@@ -381,16 +381,8 @@ const sampleTimeFormat = new Intl.DateTimeFormat('zh-CN', {
 
 <style scoped>
 .traffic-details { display: flex; flex-direction: column; box-sizing: border-box; height: 100%; padding: 2px; }
-.traffic-scroll { overflow: auto; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted) 45%, transparent) transparent; }
+.traffic-scroll { overflow: auto; }
 .history-list { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-@supports selector(::-webkit-scrollbar) {
-  .traffic-scroll { scrollbar-width: auto; scrollbar-color: auto; }
-  .traffic-scroll::-webkit-scrollbar { width: 4px; }
-  .traffic-scroll::-webkit-scrollbar-track { background: transparent; }
-  .traffic-scroll::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--muted) 30%, transparent); }
-  .traffic-scroll:hover::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 55%, transparent); }
-  .traffic-scroll::-webkit-scrollbar-button { display: none; }
-}
 .traffic-heading, .traffic-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .traffic-heading strong { font-weight: 500; }
 .traffic-heading > span, .traffic-empty { font-size: 11px; color: var(--muted); }

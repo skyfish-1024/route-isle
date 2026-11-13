@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::{sync::Mutex, thread, time::Duration};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewWindow};
 
-pub const PANEL_WIN_W: f64 = 476.0;
-pub const PANEL_WIN_H: f64 = 366.0;
-pub const PANEL_SHADOW_PAD: f64 = 8.0;
+pub const PANEL_WIN_W: f64 = 488.0;
+pub const PANEL_WIN_H: f64 = 382.0;
+pub const PANEL_SHADOW_PAD: f64 = 14.0;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -11,8 +11,8 @@ use logger::{
 };
 
 use proxy::{
-    get_geoip_status, load_rules, refresh_geoip_db, restart_proxy, save_rules, start_proxy,
-    stop_proxy, stop_proxy_internal, ProxyManager,
+    get_geoip_status, list_network_interfaces, load_rules, refresh_geoip_db, restart_proxy,
+    save_rules, scan_system_upstreams, start_proxy, stop_proxy, stop_proxy_internal, ProxyManager,
 };
 use tauri::{Emitter, Manager, PhysicalPosition, WindowEvent};
 use std::{thread, time::Duration};
@@ -114,6 +114,8 @@ pub fn run() {
             stop_proxy,
             restart_proxy,
             get_geoip_status,
+            list_network_interfaces,
+            scan_system_upstreams,
             refresh_geoip_db,
             append_connection_logs,
             append_session_log,

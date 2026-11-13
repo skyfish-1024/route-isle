@@ -187,6 +187,8 @@ const rules = reactive({
   fallback: 'flyingbird',
   cnFallback: 'wlan',
   bypassDomains: 'localhost\n*.localhost\nlocalhost.*\nlocalhost.v.qq.com\nlocalhost.weixin.qq.com\n*.local\n*.lan',
+  cnDns: '223.5.5.5\n119.29.29.29',
+  overseasDns: 'https://dns.google/dns-query',
 })
 
 let controllerInfo = { host: '127.0.0.1', port: 17891, secret: 'routeisle-local-secret' }
@@ -244,6 +246,8 @@ if (isPanelWindow) {
       if (saved.fallback) rules.fallback = saved.fallback
       if (saved.cnFallback) rules.cnFallback = saved.cnFallback
       if (typeof saved.bypassDomains === 'string') rules.bypassDomains = saved.bypassDomains
+      if (typeof saved.cnDns === 'string') rules.cnDns = saved.cnDns
+      if (typeof saved.overseasDns === 'string') rules.overseasDns = saved.overseasDns
       if (typeof saved.systemProxyEnabled === 'boolean') systemProxyEnabled.value = saved.systemProxyEnabled
       if (typeof saved.tunEnabled === 'boolean') tunEnabled.value = saved.tunEnabled
       if (saved.controller) controllerInfo = saved.controller
@@ -291,13 +295,15 @@ function serializeRules() {
     fallback: rules.fallback,
     cnFallback: rules.cnFallback,
     bypassDomains: rules.bypassDomains,
+    cnDns: rules.cnDns,
+    overseasDns: rules.overseasDns,
     systemProxyEnabled: systemProxyEnabled.value,
     tunEnabled: tunEnabled.value,
   }
 }
 
 let saveRulesTimer = null
-function persistRulesNow() {
+function persistRulesNow(tunEnabling = false) {
   if (!isPanelWindow || !rulesLoaded || suppressSave) return
   if (saveRulesTimer) {
     clearTimeout(saveRulesTimer)
@@ -305,18 +311,22 @@ function persistRulesNow() {
   }
   invoke('save_rules', { rules: serializeRules(), wasRunning: running.value }).catch(async error => {
     console.error('Unable to save proxy rules', error)
-    if (tunEnabled.value) {
+    if (tunEnabling && tunEnabled.value) {
       suppressSave = true
       tunEnabled.value = false
       await nextTick()
       suppressSave = false
     }
-    alert(typeof error === 'string' ? error : '保存配置或启用 TUN 失败')
+    alert(typeof error === 'string' ? error : (tunEnabling ? '启用 TUN 失败' : '保存配置失败'))
   })
 }
 
-watch([systemProxyEnabled, tunEnabled], () => {
-  persistRulesNow()
+watch(systemProxyEnabled, () => {
+  persistRulesNow(false)
+})
+
+watch(tunEnabled, (next, prev) => {
+  persistRulesNow(Boolean(next && !prev))
 })
 
 watch(rules, () => {
@@ -324,7 +334,7 @@ watch(rules, () => {
   if (saveRulesTimer) clearTimeout(saveRulesTimer)
   saveRulesTimer = setTimeout(() => {
     saveRulesTimer = null
-    persistRulesNow()
+    persistRulesNow(false)
   }, 350)
 }, { deep: true })
 
@@ -482,13 +492,22 @@ function onLogsCleared() {
 
 <style>
 html, body { margin: 0; overflow: hidden; background: transparent; font: 13px "Inter", "Segoe UI", "Microsoft YaHei UI", sans-serif; color-scheme: dark; }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted) 35%, transparent) transparent; }
+}
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--muted, #a1a1aa) 28%, transparent); }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--muted, #a1a1aa) 52%, transparent); }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+::-webkit-scrollbar-corner { background: transparent; }
 button, textarea, input { font: inherit; }
 button { cursor: pointer; }
 [data-theme] { --capsule-surface: rgba(24,24,27,.85); --capsule-active-surface: rgba(16,16,19,.95); --island-shadow: 0 4px 10px rgba(0, 0, 0, .16), 0 8px 16px rgba(0, 0, 0, .12), inset 0 1px #ffffff0a; --surface: var(--capsule-surface); --field: rgba(255,255,255,.04); --edge: rgba(255,255,255,.08); --muted: #a1a1aa; --accent: #34d399; --ink: #052e24; --foreground: #f4f4f5; --cell: rgba(255,255,255,.035); --hover: rgba(255,255,255,.07); --selected: rgba(255,255,255,.09); color: var(--foreground); }
 [data-theme="light"] { color-scheme: light; --capsule-surface: rgba(255,255,255,.82); --capsule-active-surface: rgba(238,238,242,.95); --island-shadow: 0 2px 6px rgba(0, 0, 0, .06), 0 6px 14px rgba(0, 0, 0, .05), inset 0 1px rgba(255, 255, 255, .7); --field: rgba(0,0,0,.025); --edge: rgba(0,0,0,.06); --muted: #71717a; --accent: #059669; --ink: #fff; --foreground: #18181b; --cell: rgba(0,0,0,.025); --hover: rgba(0,0,0,.045); --selected: #fff; }
 .shell { max-width: 460px; box-sizing: border-box; }
 .capsule-stage { display: grid; place-items: center; width: 100vw; height: 100vh; box-sizing: border-box; }
-.panel-stage { width: 100vw; height: 100vh; padding: 8px; box-sizing: border-box; }
+.panel-stage { width: 100vw; height: 100vh; padding: 14px; box-sizing: border-box; }
 .panel-stage > .panel { margin-top: 0; }
 .desktop-preview [data-theme] { --surface: #242427; }
 .desktop-preview [data-theme="light"] { --surface: #fafafa; }
