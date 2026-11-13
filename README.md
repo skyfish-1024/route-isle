@@ -1,67 +1,139 @@
 # 分流岛 · RouteIsle
 
-分流岛是一个按域名选择网络出口的桌面工具。把公司内网交给 Windows 选路，把指定网站交给物理网卡，其余流量转给本机上游代理。桌面界面采用可展开的胶囊布局，方便查看状态和编辑规则。
+> **Windows 桌面悬浮胶囊网络分流工具** —— 让公司内网、WireGuard 隧道、物理网卡直连与上游代理各走其道，一次配置，同时在线，不再反复开关切换。
 
-## 当前状态
+---
 
-| 部分 | 当前能力 |
-| --- | --- |
-| Windows 分流脚本 | 启动本地 HTTP/SOCKS 代理，检查飞鸟上游，接管和恢复系统代理及指定 Gitea 域名的 Git 代理 |
-| Vue 界面 | 编辑和启停域名规则组，配置 HTTP/SOCKS5 上游、直连和拒绝连接，支持深浅主题 |
-| Tauri 桌面预览 | 透明无边框置顶胶囊，点击展开，拖动后可吸附四边、四角和边中点 |
-| 运行详情 | 模拟实时速率、60 秒趋势、按出口和规则组统计、运行历史与连接日志 |
+## 为什么需要分流岛？（解决的实际痛点）
 
-界面的运行和 TUN 开关使用模拟数据。编辑的规则保存在当前会话，最近 30 次运行的统计和日志保存在本地。真实分流可通过下文的 Windows 脚本运行，脚本读取自己的规则文件或命令行参数。
+日常开发和办公中，多网络环境并存常常让人抓狂：
 
-## 预览界面
+| 常见痛点 | 传统做法的麻烦 | 分流岛的解法 |
+| --- | --- | --- |
+| **开代理就断内网，关代理又连不上外网** | 访问公司 Gitea / OA / 内网服务时要手动关代理，拉外部依赖或查资料时再打开，一天切十几次。 | 按域名、IP 段、端口、进程精细分流，内网与外网流量自动分道并行。 |
+| **WireGuard 与代理 TUN 虚拟网卡打架** | 同时开系统代理/TUN 和独立 WireGuard 客户端，路由表冲突、SSH 握手断开、DNS 解析串线。 | **内置 WireGuard 引擎**，直接导入 `.conf`，自动提取内网 `AllowedIPs` 网段并绑定物理网卡防回环。 |
+| **视频 / 大流量白白绕行代理** | 刷国内视频或下载大文件走代理不仅卡顿，还浪费宝贵代理流量。 | 内置常用国内流媒体与直连规则组，一键指定走 **WLAN / 物理网卡直出**。 |
+| **手写 YAML 规则门槛高、易写错** | 修改一条规则要翻半天配置文件、记正则/通配符语法，还要重启内核。 | 可视化规则表格 + **7 种快捷预设**（支持直接粘贴 URL），支持拖拽/上下排序，修改即热重载。 |
 
-在项目目录安装依赖并启动 Vite：
+---
 
-```powershell
-npm install
-npm run dev
+## 工作原理一览
+
+```mermaid
+flowchart LR
+    A["本机应用流量<br/>(浏览器 / Git / SSH / 终端)"] --> B["分流岛 RouteIsle<br/>(系统代理 17890 + TUN 接管)"]
+    B --> C{"按规则组顺序匹配<br/>(最前的最先匹配)"}
+    C -->|"内网域名 / 10.x 网段 / port:22"| D["内置 WireGuard 隧道"]
+    C -->|"国内视频 / 直连站点"| E["指定物理网卡直出 (WLAN)"]
+    C -->|"本机 / 局域网"| F["Windows 系统选路 (DIRECT)"]
+    C -->|"其余流量 (GeoIP / 兜底)"| G["HTTP / SOCKS5 上游代理"]
 ```
 
-打开终端显示的地址，默认是 http://127.0.0.1:1420/。点击胶囊展开规则面板。界面上的启动和停止按钮只改变模拟状态。
+---
 
-`npm run build` 构建前端。Windows 上安装 Rust（含 Cargo）、Visual Studio C++ Build Tools、Windows SDK 和 WebView2 后，可运行桌面预览。
+## 界面预览
+
+<p align="center">
+  <img src="docs/screenshots/capsule.png" alt="悬浮胶囊" />
+</p>
+
+| 深色模式 · 运行详情 | 浅色模式 · 运行详情 |
+| --- | --- |
+| ![深色运行详情](docs/screenshots/traffic-dark.png) | ![浅色运行详情](docs/screenshots/traffic-light.png) |
+
+| 域名规则（支持排序与预设） | 历史统计与流量趋势 |
+| --- | --- |
+| ![域名规则](docs/screenshots/rules.png) | ![历史统计](docs/screenshots/history.png) |
+
+| 系统设置（GeoIP / 绕过 / DNS） | 上游代理（HTTP / SOCKS5 / WireGuard / 网卡） |
+| --- | --- |
+| ![系统设置](docs/screenshots/settings.png) | ![上游代理](docs/screenshots/upstreams.png) |
+
+---
+
+## 核心特性
+
+- **极简悬浮胶囊**：常驻桌面并可自动吸附四边与四角；实时显示运行状态与上下行速率，点击展开紧凑控制面板，不占任务栏空间。
+- **多出口同台协同**：
+  - 支持 **HTTP / SOCKS5** 上游代理；
+  - 支持 **内置 WireGuard**（导入 `.conf` 自动解析私钥/节点/MTU/自定义 DNS，并自动接管非全路由 `AllowedIPs`）；
+  - 支持 **指定本机网卡直出**，内置本机监听端口与网卡扫描。
+- **零门槛规则构建与排序**：
+  - 规则组支持 `↑ / ↓` 排序，**排在最前的规则组最先匹配**；
+  - 内置规则小表格与预设构建器：支持 `*.后缀`、`*泛域名*`、`前缀.*`、`精确域名`、`IP/CIDR`、`port:端口/范围`、`proc:进程名`，粘贴完整 URL 自动提取域名。
+- **TUN 接管与智能 DNS**：
+  - 一键切换「系统代理」与「TUN 全局接管」（支持计划任务免重复 UAC 提权）；
+  - 支持自定义国内 / 国外 DNS，内网 WireGuard 自动防 Fake-IP 阻塞，确保内网域名与 `ssh` 正常连通。
+- **实时可观测性**：提供 60 秒实时速率趋势图、按出口与规则组流量汇总、最近 30 次运行历史及按日期检索的连接日志。
+
+---
+
+## 快速开始（源码开发）
+
+### 1. 环境准备
+
+- Windows 10 / 11（x64）
+- [Node.js](https://nodejs.org/)（18+）
+- [Rust](https://www.rust-lang.org/)（含 Cargo）与 Visual Studio C++ Build Tools / Windows SDK
+- WebView2 Runtime（Windows 10/11 通常已内置）
+
+### 2. 安装依赖并获取内核
+
+仓库不包含体积较大的二进制内核文件（`ApexCore.exe` 已在 `.gitignore` 中忽略），首次运行或打包前需先准备内核：
 
 ```powershell
+# 1. 安装前端依赖
+npm install
+
+# 2. 自动下载已验证兼容的 Mihomo 内核 (v1.19.29) 到根目录 ApexCore.exe
+npm run fetch:core
+```
+
+> **手动获取内核**：如果网络无法直接下载，可前往 [MetaCubeX/mihomo v1.19.29](https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.29) 下载 `mihomo-windows-amd64-compatible-v1.19.29.zip`（脚本默认锁定 `v1.19.29`，避免新版本变更带来兼容性问题），解压后将 `.exe` 重命名为 `ApexCore.exe` 放到项目根目录。
+>
+> GeoIP 数据库 `Country.mmdb` 已随仓库提供，也可在程序「系统设置」中在线更新。
+
+### 3. 启动桌面预览
+
+```powershell
+# 启动 Tauri 桌面端开发预览（推荐）
 npm run desktop
 ```
 
-启动后，胶囊出现在屏幕顶部。单击展开或收起，按住拖动可改变位置。运行时显示上传和下载速率，未运行时显示「未启用」。展开「运行详情」后，可悬停趋势图查看采样，或按日期筛选历史与日志。
+仅需在浏览器中预览界面与模拟数据时，可运行：
 
-## 运行 Windows 分流脚本
-
-当前脚本以飞鸟为上游，要求飞鸟已连接并监听 `127.0.0.1:7890`。关闭飞鸟的「系统代理」开关，让分流岛接管该设置。脚本默认加载项目目录中的 `ApexCore.exe`，也可以在本地规则文件中指定内核路径。
-
-1. 双击 [Start-Proxy.cmd](Start-Proxy.cmd)。启动器验证飞鸟以及经本地分流访问内外网的连通性，通过后将 Windows 系统代理切到 `127.0.0.1:17890`。
-2. 保持启动窗口打开。遵循系统代理的应用会使用分流规则。
-3. 按 `Ctrl+C` 停止并恢复代理。异常退出后，可双击 [Restore-Proxy.cmd](Restore-Proxy.cmd) 恢复 Windows 和 Git 的代理设置。
-
-启动检查默认访问 `www.example.com`。可在本地规则文件中添加一个内网检查地址，并指定需要联动代理的 Git 主机。
-
-### 配置域名规则
-
-在项目根目录创建本地文件 `proxy-rules.json`。两个数组都按域名后缀匹配，包含子域名。重启分流脚本后生效。
-
-```json
-{
-  "SystemRoute": ["intranet.example.com"],
-  "PhysicalDirect": ["direct.example.com"],
-  "Core": "C:/path/to/ApexCore.exe",
-  "HealthCheckUrl": "https://git.example.com/",
-  "GitProxyHost": "git.example.com"
-}
+```powershell
+npm run dev
 ```
 
-`Core`、`HealthCheckUrl` 和 `GitProxyHost` 可按需填写。`proxy-rules.json` 由 Git 忽略。
+### 4. 构建安装包
 
-- `SystemRoute` 解析后由 Windows 选路。目标 IP 命中现有的 WireGuard 路由时，流量进入隧道。
-- `PhysicalDirect` 尝试通过指定网卡连接，默认网卡名为 `WLAN`。实际公网出口仍可能受系统的 TUN 路由影响。
-- 其余请求交给飞鸟的 `7890` 端口。脚本的指定域名使用经飞鸟转发的 DoH 解析。
+```powershell
+# 构建前端产物并打包 Windows 安装程序（NSIS / MSI）
+npm run build:desktop
+```
 
-## 技术栈
+构建产物输出在 `src-tauri/target/release/bundle/` 目录下。
 
-Tauri 2、Vue 3、Vite、UnoCSS、Reka UI、Lucide，以及用于 Windows 代理管理的 PowerShell 脚本。
+---
+
+## 规则语法速查
+
+在「域名规则 → 规则组设置」中可通过快捷预设一键生成，也支持以下语法：
+
+| 类型 | 示例 | 说明 |
+| --- | --- | --- |
+| 后缀匹配 | `*.example.com` | 匹配主域名及所有子域名 |
+| 泛域名 / 通配符 | `*keyword*` / `cdn-*.example.com` | 域名通配符匹配 |
+| 前缀匹配 | `api.*` | 匹配指定前缀域名 |
+| 精确匹配 | `git.example.com` | 精确匹配单个域名 |
+| IP / CIDR | `10.10.0.0/16` / `10.10.1.5` | 匹配 IP 或网段（单 IP 自动补全 `/32` 或 `/128`） |
+| 目标端口 | `port:22` / `port:8000-9000` | 按目标端口或端口范围分流 |
+| 进程名 | `proc:ssh.exe` | 按进程文件名分流（需开启 TUN） |
+
+---
+
+## 数据与技术栈
+
+- **运行时数据目录**：`%APPDATA%\local.splitproxy.island\`（存放 `proxy-rules.json` 与 `logs/`，不污染源码仓库）。
+- **技术栈**：Tauri 2（Rust） · Vue 3 · Vite · UnoCSS · Reka UI · Lucide Icons · Mihomo (`ApexCore.exe`)

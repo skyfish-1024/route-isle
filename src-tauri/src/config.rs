@@ -390,8 +390,6 @@ mod win_net_scan {
         "flclash",
         "verge",
         "privoxy",
-        "flyingbird",
-        "feiniao",
     ];
 
     fn is_proxy_process(exe: &str) -> bool {

@@ -17,8 +17,9 @@ use proxy::{
 use tauri::{Emitter, Manager, PhysicalPosition, WindowEvent};
 use std::{thread, time::Duration};
 use window::{
-    collapse_panel, drag_island, get_window_state, hide_panel, position_panel_near_capsule,
-    sync_capsule_state, toggle_panel, IslandPosition, PanelVisibilityEvent,
+    collapse_panel, drag_island, get_window_state, hide_panel, is_panel_blur_locked,
+    position_panel_near_capsule, set_panel_blur_lock, sync_capsule_state, toggle_panel,
+    IslandPosition, PanelVisibilityEvent,
 };
 
 pub fn run() {
@@ -78,9 +79,15 @@ pub fn run() {
                     collapse_panel(app, true);
                 }
                 ("panel", WindowEvent::Focused(false)) => {
+                    if is_panel_blur_locked(app) {
+                        return;
+                    }
                     let app_handle = app.clone();
                     thread::spawn(move || {
                         thread::sleep(Duration::from_millis(80));
+                        if is_panel_blur_locked(&app_handle) {
+                            return;
+                        }
                         let main_focused = app_handle
                             .get_webview_window("main")
                             .and_then(|w| w.is_focused().ok())
@@ -108,6 +115,7 @@ pub fn run() {
             hide_panel,
             sync_capsule_state,
             get_window_state,
+            set_panel_blur_lock,
             load_rules,
             save_rules,
             start_proxy,

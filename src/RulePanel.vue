@@ -341,12 +341,29 @@ const upstreamCanSave = computed(() => {
   if (item.protocol === 'wireguard') return Boolean(item.wireguardConf?.trim())
   return Boolean(item.address?.trim())
 })
+const importingFile = ref(false)
+const hasOpenEditor = computed(() =>
+  editing.value || editingRuleItem.value || editingUpstream.value || editingBypass.value || editingDns.value || importingFile.value
+)
+watch(hasOpenEditor, (locked) => {
+  if (desktop) invoke('set_panel_blur_lock', { locked }).catch(() => {})
+}, { immediate: true })
 function triggerWgImport() {
+  importingFile.value = true
+  if (desktop) invoke('set_panel_blur_lock', { locked: true }).catch(() => {})
+  const onFocusBack = () => {
+    window.removeEventListener('focus', onFocusBack)
+    setTimeout(() => { importingFile.value = false }, 200)
+  }
+  window.addEventListener('focus', onFocusBack, { once: true })
   wgFileInput.value?.click()
 }
 async function importWireGuardFile(event) {
   const file = event.target?.files?.[0]
-  if (!file || !upstreamDraft.value) return
+  if (!file || !upstreamDraft.value) {
+    importingFile.value = false
+    return
+  }
   try {
     const text = await file.text()
     upstreamDraft.value.wireguardConf = text
@@ -357,6 +374,7 @@ async function importWireGuardFile(event) {
     }
   } finally {
     event.target.value = ''
+    importingFile.value = false
   }
 }
 function editUpstream(upstream = null) {
@@ -679,7 +697,7 @@ function removeUpstream(id) {
                     <small>{{ item.address }}</small>
                   </button>
                   <button v-for="iface in networkInterfaces" :key="iface" type="button" class="scan-chip"
-                    title="指定本机网卡出口"
+                    :title="`指定本机网卡出口：${iface}`"
                     @click="applyDetectedInterface(iface)">
                     <span>网卡</span>
                     <small>{{ iface }}</small>
@@ -687,7 +705,7 @@ function removeUpstream(id) {
                 </div>
                 <p v-else class="scan-empty">{{ !desktop ? '当前为浏览器预览，请在桌面端窗口中使用本机扫描' : (scanBusy ? '正在扫描本机监听端口与网卡...' : '未检测到常见本地代理端口') }}</p>
               </div>
-              <label>出口名称<input v-model="upstreamDraft.name" required maxlength="40" placeholder="例如：飞鸟 / 公司 WireGuard" /></label>
+              <label>出口名称<input v-model="upstreamDraft.name" required maxlength="40" placeholder="例如：本地代理 / 公司 WireGuard" /></label>
               <label v-if="upstreamDraft.protocol === 'wireguard'">
                 <span class="label-row">
                   <span>WireGuard 配置（.conf）</span>
@@ -882,11 +900,12 @@ footer { border-top: 1px solid var(--edge); padding-top: 12px; }
 .label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .inline-action { border: 0; border-radius: 6px; padding: 2px 7px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: 11px; cursor: pointer; }
 .inline-action:hover { background: color-mix(in srgb, var(--accent) 24%, transparent); }
-.scan-box { margin-bottom: 8px; padding: 6px 8px; border-radius: 9px; background: var(--field); }
+.scan-box { min-width: 0; overflow: hidden; margin-bottom: 8px; padding: 6px 8px; border-radius: 9px; background: var(--field); }
 .scan-title { font-size: 11px; color: var(--muted); }
-.scan-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; max-height: 52px; overflow-y: auto; }
-.scan-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border: 1px solid var(--edge); border-radius: 6px; background: var(--surface); font-size: 11px; cursor: pointer; }
-.scan-chip small { color: var(--muted); font-family: "SF Mono", Consolas, monospace; font-size: 10px; }
+.scan-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; max-height: 54px; overflow-y: auto; overflow-x: hidden; }
+.scan-chip { display: inline-flex; align-items: center; gap: 5px; box-sizing: border-box; max-width: 30%; min-width: 0; padding: 3px 7px; border: 1px solid var(--edge); border-radius: 6px; background: var(--surface); font-size: 11px; cursor: pointer; }
+.scan-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scan-chip small { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-family: "SF Mono", Consolas, monospace; font-size: 10px; }
 .scan-chip:hover { border-color: var(--accent); color: var(--accent); }
 .scan-empty { margin: 5px 0 0; font-size: 11px; color: var(--muted); }
 .iface-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }

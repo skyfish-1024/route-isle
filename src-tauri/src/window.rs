@@ -39,6 +39,7 @@ pub struct WindowStateInner {
     pub capsule_insets: [f64; 4],
     pub panel_visible: bool,
     pub pop_up: bool,
+    pub blur_locked: bool,
     pub capsule_state: CapsuleState,
 }
 
@@ -48,6 +49,7 @@ impl Default for WindowStateInner {
             capsule_insets: [20.0, 23.0, 20.0, 23.0],
             panel_visible: false,
             pop_up: false,
+            blur_locked: false,
             capsule_state: CapsuleState::default(),
         }
     }
@@ -322,4 +324,17 @@ pub fn get_window_state(saved: State<'_, IslandPosition>) -> (CapsuleState, Pane
             pop_up: inner.pop_up,
         },
     )
+}
+
+pub fn is_panel_blur_locked(app: &AppHandle) -> bool {
+    app.state::<IslandPosition>()
+        .0
+        .lock()
+        .expect("window state lock")
+        .blur_locked
+}
+
+#[tauri::command]
+pub fn set_panel_blur_lock(saved: State<'_, IslandPosition>, locked: bool) {
+    saved.0.lock().expect("window state lock").blur_locked = locked;
 }

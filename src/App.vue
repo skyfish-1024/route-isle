@@ -183,8 +183,8 @@ const rules = reactive({
       enabled: true,
     },
   ],
-  upstreams: [{ id: 'flyingbird', name: '飞鸟', protocol: 'http', address: '127.0.0.1:7890' }],
-  fallback: 'flyingbird',
+  upstreams: [{ id: 'local-proxy', name: '本地代理', protocol: 'http', address: '127.0.0.1:7890' }],
+  fallback: 'local-proxy',
   cnFallback: 'wlan',
   bypassDomains: 'localhost\n*.localhost\nlocalhost.*\nlocalhost.v.qq.com\nlocalhost.weixin.qq.com\n*.local\n*.lan',
   cnDns: '223.5.5.5\n119.29.29.29',
@@ -438,14 +438,16 @@ function onLogsCleared() {
         <strong>分流岛</strong>
       </span>
       <span class="state" :class="{ running }" aria-hidden="true"><i></i></span>
-      <span class="capsule-rate">
-        <template v-if="running">
-          <span>↑ {{ formatBytes(traffic.uploadRate) }}/s</span>
-          <span>↓ {{ formatBytes(traffic.downloadRate) }}/s</span>
-        </template>
-        <span v-else class="capsule-idle">未启用</span>
+      <span class="capsule-right">
+        <span class="capsule-rate">
+          <template v-if="running">
+            <span>↑ {{ formatBytes(traffic.uploadRate) }}/s</span>
+            <span>↓ {{ formatBytes(traffic.downloadRate) }}/s</span>
+          </template>
+          <span v-else class="capsule-idle">未启用</span>
+        </span>
+        <ChevronDown class="chevron" :size="13" aria-hidden="true" />
       </span>
-      <ChevronDown class="chevron" :size="13" aria-hidden="true" />
     </button>
   </main>
 
@@ -474,14 +476,16 @@ function onLogsCleared() {
         <strong>分流岛</strong>
       </span>
       <span class="state" :class="{ running }" aria-hidden="true"><i></i></span>
-      <span class="capsule-rate">
-        <template v-if="running">
-          <span>↑ {{ formatBytes(traffic.uploadRate) }}/s</span>
-          <span>↓ {{ formatBytes(traffic.downloadRate) }}/s</span>
-        </template>
-        <span v-else class="capsule-idle">未启用</span>
+      <span class="capsule-right">
+        <span class="capsule-rate">
+          <template v-if="running">
+            <span>↑ {{ formatBytes(traffic.uploadRate) }}/s</span>
+            <span>↓ {{ formatBytes(traffic.downloadRate) }}/s</span>
+          </template>
+          <span v-else class="capsule-idle">未启用</span>
+        </span>
+        <ChevronDown class="chevron" :size="13" aria-hidden="true" />
       </span>
-      <ChevronDown class="chevron" :size="13" aria-hidden="true" />
     </button>
     <Transition>
       <RulePanel v-if="expanded" v-model:system-proxy-enabled="systemProxyEnabled" v-model:tun-enabled="tunEnabled" :theme="theme" :theme-mode="themeMode" :rules="rules" :running="running" :toggling="toggling" :traffic="traffic" :sessions="sessions"
@@ -511,9 +515,9 @@ button { cursor: pointer; }
 .panel-stage > .panel { margin-top: 0; }
 .desktop-preview [data-theme] { --surface: #242427; }
 .desktop-preview [data-theme="light"] { --surface: #fafafa; }
-.island { display: flex; align-items: center; gap: 8px; box-sizing: border-box; height: 30px; margin: 0 auto; padding: 0 10px; border: 1px solid var(--edge); border-radius: 999px; color: inherit; background: var(--capsule-surface); backdrop-filter: blur(24px) saturate(180%); box-shadow: var(--island-shadow); transition: padding .2s, transform .2s, background-color .18s ease, box-shadow .18s ease; }
+.island { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; box-sizing: border-box; min-width: 214px; height: 30px; margin: 0 auto; padding: 0 11px; border: 1px solid var(--edge); border-radius: 999px; color: inherit; background: var(--capsule-surface); backdrop-filter: blur(24px) saturate(180%); box-shadow: var(--island-shadow); transition: padding .2s, transform .2s, background-color .18s ease, box-shadow .18s ease; }
 .island:hover, .expanded .island { background: var(--capsule-active-surface); }
-.island:hover { padding-inline: 12px; }
+.island:hover { padding-inline: 13px; }
 .island { user-select: none; }
 .island.is-dragging { cursor: grabbing; }
 .island strong { font-size: 13px; font-weight: 500; letter-spacing: -.01em; }
@@ -526,13 +530,13 @@ button { cursor: pointer; }
 .mark .node-high { fill: var(--accent); opacity: .95; }
 .mark .node-low { fill: var(--foreground); opacity: .78; }
 .mark.running .branch-high, .mark.running .node-high { opacity: 1; }
-.state { display: flex; align-items: center; gap: 6px; margin-left: 8px; color: var(--muted); font-size: 11px; }
+.state { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 11px; }
 .state i { width: 6px; height: 6px; border-radius: 50%; background: #a1a1aa; }
 .state.running i { background: #34d399; box-shadow: 0 0 7px #34d39966; }
-.capsule-brand, .capsule-rate { flex: 0 0 62px; }
-.capsule-brand { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-.capsule-rate { display: grid; font-size: 10px; line-height: 11px; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
-.capsule-idle { line-height: 22px; text-align: center; }
+.capsule-brand { display: flex; align-items: center; justify-self: start; gap: 7px; white-space: nowrap; }
+.capsule-right { display: flex; align-items: center; justify-self: end; gap: 6px; white-space: nowrap; }
+.capsule-rate { display: grid; min-width: 58px; font-size: 10px; line-height: 11px; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.capsule-idle { line-height: 22px; text-align: right; }
 .chevron { color: var(--muted); transition: transform .2s; }
 .expanded .chevron { transform: rotate(180deg); }
 .pop-up.expanded .chevron { transform: rotate(0deg); }
