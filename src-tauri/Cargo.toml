@@ -2,6 +2,7 @@
 name = "split-proxy-island"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "split_proxy_island_lib"

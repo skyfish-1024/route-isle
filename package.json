@@ -1,6 +1,7 @@
 {
   "name": "split-proxy-island",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",

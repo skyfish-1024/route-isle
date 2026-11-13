@@ -131,3 +131,7 @@ npm run build:desktop
 
 - **运行时数据目录**：`%APPDATA%\local.splitproxy.island\`（存放 `proxy-rules.json` 与 `logs/`，不污染源码仓库）。
 - **技术栈**：Tauri 2（Rust） · Vue 3 · Vite · UnoCSS · Reka UI · Lucide Icons · Mihomo (`ApexCore.exe`)
+
+## 开源协议
+
+本项目源码基于 [MIT License](LICENSE) 开源（内核 `ApexCore.exe` / Mihomo 等第三方组件遵循其各自开源协议）。
